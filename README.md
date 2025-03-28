@@ -1,27 +1,20 @@
-# Microsimulation in R : A tutorial
-This GitHub repository provides the code explained in the paper: 
+# Microsimulation: ESD vs. Surgery Procedure and Recovery
 
-- Krijkamp EM, Alarid-Escudero F, Enns EA, Jalal HJ, Hunink MGM, Pechlivanoglou P. [Microsimulation modeling for health decision sciences using R: A tutorial](http://journals.sagepub.com/doi/full/10.1177/0272989X18754513). Med Decis Making. 2018;38(3):400–22. 
+This project uses **R version 4.4.2** and is based on the microsimulation methods from [DARTH-git's Microsimulation Tutorial](https://github.com/DARTH-git/Microsimulation-tutorial).
 
-## Sections
-- [Appendix A: simple microsimulation model - Sick-Sicker example](https://github.com/DARTH-git/Microsimulation-tutorial/blob/master/Appendix%20A_online_supp.R)
+## Objective
 
-- [Appendix B: extended microsimulation model - Sick-Sicker example](https://github.com/DARTH-git/Microsimulation-tutorial/blob/master/Appendix%20B_online_supp.R)
+The simulation models and compares patient experiences undergoing Endoscopic Submucosal Dissection (ESD) versus traditional surgical procedures, focusing on procedural outcomes and recovery trajectories.
 
-- [Appendix C: Markov cohort model - Sick-Sicker example](https://github.com/DARTH-git/Microsimulation-tutorial/blob/master/Appendix%20C_online_supp.R)
+## Features
 
-- [Appendix D: samplev comparison](https://github.com/DARTH-git/Microsimulation-tutorial/blob/master/Appendix%20D_online_supp.R)
+- Simulates individual patient pathways
+- Compares health outcomes cost-effectiveness of ESD and surgery
 
-## Full list of Contributors:
+## Dependencies
 
-  * [Eline Krijkamp](https://github.com/krijkamp) 
+- R 4.4.2
 
-  * [Fernando Alarid-Escudero](https://github.com/feralaes) 
+## Reference
 
-  * [Eva Enns](https://github.com/evaenns)
-  
-  * [Hawre Jalal](https://github.com/hjalal)
-
-  * Myriam Hunink 
-
-  * Petros Pechlivanoglou
+- [Microsimulation Tutorial by DARTH-git](https://github.com/DARTH-git/Microsimulation-tutorial)
