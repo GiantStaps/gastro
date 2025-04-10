@@ -34,40 +34,114 @@ d.c   <- d.e <- 0.03           # equal discounting of costs and QALYs by 3%
 v.Trt <- c("ESD", "Surgery")   # store the strategy names
 
 # Transition probabilities (per cycle)
-p.H1D    <- 0.0104              # short-term mortality rate after ESD
-p.H1S1   <- 1 - p.H1D
-p.H2D    <- 0.0131             # short-term mortality rate after surgery
-p.H2P    <- 0.0886             # probability of clinical failure after ESD
+p.H1D    <- 0.0050              # 3 month mortality rate after ESD
+p.H1H2   <- 0.0886              # probability of switching to surgery after ESD
+p.H1S1   <- 1 - p.H1D - p.H1H2  # probability of staying in surveillance after ESD
+
+p.H2D    <- 0.0463             # short-term mortality rate after surgery
+p.H2P    <- 0.0082             # probability of clinical failure after ESD
 p.H2S2   <- 1 - p.H2P - p.H2D  # probability of staying in surveillance after surgery
 
-p.S1H2 <- rep(0.0249, 9)     # probability of local recurrence after ESD
-p.S1P  <- rep(0.0148, 9)     # probability of distant recurrence after ESD
-p.S1D  <- c(rep(0.000369, 3), # mortality rate after ESD
-            rep(0.0227,   6))
+# Pre-calculate S1 and S2 time-dependent transition probabilities
+p.H1S1 <- 1 - p.H1D - p.H1H2  # probability of staying in surveillance after ESD
+p.H2S2 <- 1 - p.H2P - p.H2D  # probability of staying in surveillance after surgery
+
+# S1 state transition probabilities
+p.S1H2 <- c(0,
+            0.03,
+            0.03,
+            0.0249,
+            0.0249,
+            0.0249,
+            0.0249,
+            0.02)  # probability of local recurrence after ESD
+
+p.S1P  <- rep(0, 8)     # probability of distant recurrence after ESD
+
+p.S1D  <- c(0.002,
+            0.0034,
+            0.0034,
+            0.0028,
+            0.0028,
+            0.0028,
+            0.0028,
+            0.0023)  # mortality rate for ESD follow-up
+
+# Calculate p.S1S1 for each time point
 p.S1S1 <- 1 - p.S1H2 - p.S1P - p.S1D  # probability of staying in S1
 
-p.S2P  <- rep(0.0119 + 0.0127, 9)    # local + distant recurrence for surgery
-p.S2D  <- c(rep(0.0131, 3),          # mortality rate for surgery
-            rep(0.0714, 6))
-p.S2S2 <- 1 - p.S2P - p.S2D          # probability of staying in S2
+# S2 state transition probabilities
+p.S2P  <- c(0.0000,
+            0.0064,
+            0.0064,
+            0.0064,
+            0.0038,
+            0.0038,
+            0.0038,
+            0.0025)    # local + distant recurrence for surgery
 
-# Transition probabilities for palliative care
-p.PD     <- 0.5               # assume patient dies with 50% chance when in palliative care
-p.PP     <- 1 - p.PD          # probability of staying in palliative care
+p.S2D  <- c(0.0058,
+            0.0058,
+            0.0044,
+            0.0044,
+            0.0026,
+            0.0026,
+            0.0026,
+            0.0018)    # mortality rate for surgery
+
+# Calculate p.S2S2 for each time point
+p.S2S2 <- 1 - p.S2P - p.S2D    # probability of staying in S2
+
+# Palliative care probabilities
+p.PD <- 0.5  # assume patient dies with 50% chance when in palliative care
+p.PP <- 1 - p.PD  # probability of staying in palliative care
 
 
 # Cost and utility inputs 
-c.H1     <- 4000                # cost of ESD
-c.H2     <- 4000                # cost of surgery
-c.S1     <- 100                 # cost of surveillance-ESD 
-c.S2     <- 100                 # cost of surveillance-surgery
-c.P      <- 50                  # cost of palliative
+c.H1     <- 18347.00                 # cost of ESD
+c.H2     <- 80000.00                # cost of surgery
+c.S1     <- c(4137.50, 
+2068.75, 
+2068.75 ,
+1443.75 ,
+1443.75 ,
+1443.75 ,
+1443.75 ,
+1443.75 
+)                 # cost of surveillance-ESD 
+c.S2     <- c(3275.00, 
+ 1637.50, 
+ 1637.50, 
+ 818.75, 
+ 818.75, 
+ 818.75, 
+ 818.75, 
+ 818.75)
 
-u.H1     <- 0.8                 # utility when PreESD 
-u.H2     <- 0.8                 # utility when PreSurgery 
-u.S1     <- 1                   # utility when surveillance-ESD
-u.S2     <- 1                   # utility when surveillance-surgery
+c.P      <- 9600                  # cost of palliative
+
+u.H1     <- 0.7                 # utility when PreESD 
+u.H2     <- 0.7                 # utility when PreSurgery 
+u.S1     <- c(0.73,
+0.75,
+0.75,
+0.76,
+0.76,
+0.76,
+0.76,
+0.76
+)                   # utility when surveillance-ESD
+u.S2     <-  c(0.73,
+0.75,
+0.75,
+0.76,
+0.76,
+0.76,
+0.76,
+0.76
+)                   # utility when surveillance-surgery
 u.P      <- 0.5                 # utility when palliative
+u.D      <- 0                   # utility when dead
 
 ##################################### Functions ###########################################
 
@@ -122,11 +196,10 @@ MicroSim <- function(v.M, n.i, n.t, v.n, d.c, d.e, TR.out = TRUE, TS.out = TRUE,
     s1_substate_tracker <- matrix(0, nrow = n.t+1, ncol = 9)
     s2_substate_tracker <- matrix(0, nrow = n.t+1, ncol = 9)
   }
-  
-  for (i in 1:n.i) {
+    for (i in 1:n.i) {
     set.seed(seed + i)                  # set the seed for every individual for the random number generator
-    m.C[i, 1] <- Costs(m.M[i, 1])  # estimate costs per individual for the initial health state 
-    m.E[i, 1] <- Effs (m.M[i, 1])  # estimate QALYs per individual for the initial health state
+    m.C[i, 1] <- Costs(m.M[i, 1], 0, 0)  # estimate costs per individual for the initial health state 
+    m.E[i, 1] <- Effs(m.M[i, 1], 0, 0)  # estimate QALYs per individual for the initial health state
     
     for (t in 1:n.t) {
       # Print detailed cycle information for the first few individuals if verbose
@@ -154,15 +227,14 @@ MicroSim <- function(v.M, n.i, n.t, v.n, d.c, d.e, TR.out = TRUE, TS.out = TRUE,
       from_state <- match(m.M[i, t], v.n)
       to_state <- match(m.M[i, t + 1], v.n)
       m.trans_count[from_state, to_state] <- m.trans_count[from_state, to_state] + 1
-      
-      m.C[i, t + 1] <- Costs(m.M[i, t + 1])   # estimate costs per individual during cycle t + 1
-      m.E[i, t + 1] <- Effs(m.M[i, t + 1])   # estimate QALYs per individual during cycle t + 1
+        m.C[i, t + 1] <- Costs(m.M[i, t + 1], m.S1_time[i, t + 1], m.S2_time[i, t + 1])   # estimate costs per individual during cycle t + 1
+      m.E[i, t + 1] <- Effs(m.M[i, t + 1], m.S1_time[i, t + 1], m.S2_time[i, t + 1])   # estimate QALYs per individual during cycle t + 1
       
       # Update time counters for surveillance states
       if (m.M[i, t + 1] == "S1") {
         if (m.M[i, t] == "S1") {
           # If staying in S1, increment counter
-          m.S1_time[i, t + 1] <- min(m.S1_time[i, t] + 1, 9)  # Cap at 9
+          m.S1_time[i, t + 1] <- min(m.S1_time[i, t] + 1, 8)  # Cap at 8
         } else {
           # If newly entering S1, initialize counter to 1
           m.S1_time[i, t + 1] <- 1
@@ -172,7 +244,7 @@ MicroSim <- function(v.M, n.i, n.t, v.n, d.c, d.e, TR.out = TRUE, TS.out = TRUE,
       if (m.M[i, t + 1] == "S2") {
         if (m.M[i, t] == "S2") {
           # If staying in S2, increment counter
-          m.S2_time[i, t + 1] <- min(m.S2_time[i, t] + 1, 9)  # Cap at 9
+          m.S2_time[i, t + 1] <- min(m.S2_time[i, t] + 1, 8)  # Cap at 8
         } else {
           # If newly entering S2, initialize counter to 1
           m.S2_time[i, t + 1] <- 1
@@ -278,10 +350,19 @@ MicroSim <- function(v.M, n.i, n.t, v.n, d.c, d.e, TR.out = TRUE, TS.out = TRUE,
     # Print transition frequencies
     cat("\nTotal transitions between states:\n")
     print(m.trans_count)
-    
-    # Print empirical transition probabilities
+      # Print empirical transition probabilities
     cat("\nEmpirical transition matrix (proportion of transitions):\n")
-    m.trans_prob <- m.trans_count / rowSums(m.trans_count)
+    # Handle division by zero (states with no transitions)
+    row_sums <- rowSums(m.trans_count)
+    m.trans_prob <- matrix(0, nrow = n.s, ncol = n.s, dimnames = list(v.n, v.n))
+    for (i in 1:n.s) {
+      if (row_sums[i] > 0) {
+        m.trans_prob[i, ] <- m.trans_count[i, ] / row_sums[i]
+      } else {
+        # For rows with no transitions, indicate this with zeros instead of NaN
+        m.trans_prob[i, ] <- 0
+      }
+    }
     print(round(m.trans_prob, 4))
   }
   
@@ -306,63 +387,133 @@ Probs <- function(M_it, S1_time_it = 0, S2_time_it = 0) {
   # S1_time_it: time spent in S1 state by individual i at cycle t (defaults to 0)
   # S2_time_it: time spent in S2 state by individual i at cycle t (defaults to 0)
   
-  v.p.it <- rep(NA, n.s)     # create vector of state transition probabilities
+  v.p.it <- rep(0, n.s)     # create vector of state transition probabilities with zeros
   names(v.p.it) <- v.n       # name the vector
   
-  # Get index for time-dependent probabilities (capped at 9)
-  S1_idx <- min(max(S1_time_it, 1), 9)  # Ensure index is between 1 and 9
-  S2_idx <- min(max(S2_time_it, 1), 9)  # Ensure index is between 1 and 9
+  # Get index for time-dependent probabilities (capped at 8)
+  S1_idx <- min(max(S1_time_it, 1), 8)  # Ensure index is between 1 and 8
+  S2_idx <- min(max(S2_time_it, 1), 8)  # Ensure index is between 1 and 8
   
   # update v.p.it with the appropriate probabilities   
-  v.p.it[M_it == "H1"]  <- c(0, 0, p.H1S1, 0, 0, p.H1D)                     # transition probabilities when H1
-  v.p.it[M_it == "H2"]  <- c(0, 0, 0, p.H2S2, p.H2P, p.H2D)                 # transition probabilities when H2
-  v.p.it[M_it == "S1"]  <- c(0, p.S1H2[S1_idx], p.S1S1[S1_idx], 0, p.S1P[S1_idx], p.S1D[S1_idx])  # transition probabilities when S1
-  v.p.it[M_it == "S2"]  <- c(0, 0, 0, p.S2S2[S2_idx], p.S2P[S2_idx], p.S2D[S2_idx])                # transition probabilities when S2
-  v.p.it[M_it == "P"]   <- c(0, 0, 0, 0, p.PP, p.PD)                        # transition probabilities when P
-  v.p.it[M_it == "D"]   <- c(0, 0, 0, 0, 0, 1)                              # transition probabilities when dead   
-  
-  # Check if probabilities sum to 1
-  if (abs(sum(v.p.it) - 1) > 1e-6) {
-    print(paste("Error: Probabilities do not sum to 1 for state", M_it, 
-                "S1_time =", S1_time_it, "S2_time =", S2_time_it, 
-                "Sum =", sum(v.p.it)))
-    return(v.p.it / sum(v.p.it))  # Normalize to make sure they sum to 1
-  } else {
-    return(v.p.it)
+  if(M_it == "H1") {
+    v.p.it["H1"] <- 0
+    v.p.it["H2"] <- p.H1H2
+    v.p.it["S1"] <- p.H1S1
+    v.p.it["S2"] <- 0
+    v.p.it["P"] <- 0
+    v.p.it["D"] <- p.H1D
+  } else if(M_it == "H2") {
+    v.p.it["H1"] <- 0
+    v.p.it["H2"] <- 0
+    v.p.it["S1"] <- 0
+    v.p.it["S2"] <- p.H2S2
+    v.p.it["P"] <- p.H2P
+    v.p.it["D"] <- p.H2D
+  } else if(M_it == "S1") {
+    v.p.it["H1"] <- 0
+    v.p.it["H2"] <- p.S1H2[S1_idx]
+    v.p.it["S1"] <- p.S1S1[S1_idx]
+    v.p.it["S2"] <- 0
+    v.p.it["P"] <- p.S1P[S1_idx]
+    v.p.it["D"] <- p.S1D[S1_idx]
+  } else if(M_it == "S2") {
+    v.p.it["H1"] <- 0
+    v.p.it["H2"] <- 0
+    v.p.it["S1"] <- 0
+    v.p.it["S2"] <- p.S2S2[S2_idx]
+    v.p.it["P"] <- p.S2P[S2_idx]
+    v.p.it["D"] <- p.S2D[S2_idx]
+  } else if(M_it == "P") {
+    v.p.it["H1"] <- 0
+    v.p.it["H2"] <- 0
+    v.p.it["S1"] <- 0
+    v.p.it["S2"] <- 0
+    v.p.it["P"] <- p.PP
+    v.p.it["D"] <- p.PD
+  } else if(M_it == "D") {
+    v.p.it["H1"] <- 0
+    v.p.it["H2"] <- 0
+    v.p.it["S1"] <- 0
+    v.p.it["S2"] <- 0
+    v.p.it["P"] <- 0
+    v.p.it["D"] <- 1
   }
+  
+  # Check if probabilities sum to 1 (allowing for small numerical errors)
+  sum_p <- sum(v.p.it)
+  if (abs(sum_p - 1) > 1e-6) {
+    print(paste("Warning: Probabilities do not sum to 1 for state", M_it, 
+                "S1_time =", S1_time_it, "S2_time =", S2_time_it, 
+                "Sum =", sum_p))
+    # Normalize probabilities to sum to 1
+    v.p.it <- v.p.it / sum_p
+  }
+  
+  return(v.p.it)
 }
 
 
 ### Costs function
 # The Costs function estimates the costs at every cycle.
 
-Costs <- function (M_it) {
+Costs <- function(M_it, S1_time_it = 0, S2_time_it = 0) {
   # M_it: health state occupied by individual i at cycle t (character variable)
+  # S1_time_it: time spent in S1 state by individual i at cycle t (defaults to 0)
+  # S2_time_it: time spent in S2 state by individual i at cycle t (defaults to 0)
   
   c.it <- 0                                  # by default the cost for everyone is zero 
   c.it[M_it == "H1"]  <- c.H1                # update the cost if H1
   c.it[M_it == "H2"]  <- c.H2                # update the cost if H2
-  c.it[M_it == "S1"]  <- c.S1                # update the cost if S2
-  c.it[M_it == "S2"]  <- c.S2                # update the cost if S2
+  
+  # For surveillance states, use the appropriate vector index based on time spent
+  if (any(M_it == "S1")) {
+    # Get index for time-dependent costs (capped at length of vector)
+    S1_idx <- pmin(pmax(S1_time_it[M_it == "S1"], 1), length(c.S1))
+    c.it[M_it == "S1"] <- c.S1[S1_idx]
+  }
+  
+  if (any(M_it == "S2")) {
+    # Get index for time-dependent costs (capped at length of vector)
+    S2_idx <- pmin(pmax(S2_time_it[M_it == "S2"], 1), length(c.S2))
+    c.it[M_it == "S2"] <- c.S2[S2_idx]
+  }
+  
   c.it[M_it == "P"]   <- c.P                 # update the cost if P
-  return(c.it)        		                   # return the costs
+  
+  return(c.it)                              # return the costs
 }
 
 
 ### Health outcome function 
 # The Effs function to update the utilities at every cycle.
 
-Effs <- function (M_it, cl = 1) {
+Effs <- function(M_it, S1_time_it = 0, S2_time_it = 0, cl = 1) {
   # M_it: health state occupied by individual i at cycle t (character variable)
+  # S1_time_it: time spent in S1 state by individual i at cycle t (defaults to 0)
+  # S2_time_it: time spent in S2 state by individual i at cycle t (defaults to 0)
   # cl:   cycle length (default is 1)
   
   u.it <- 0                      # by default the utility for everyone is zero
   u.it[M_it == "H1"]  <- u.H1    # update the utility if H1
   u.it[M_it == "H2"]  <- u.H2    # update the utility if H2
-  u.it[M_it == "S1"] <- u.S1     # update the utility if S1
-  u.it[M_it == "S2"] <- u.S2     # update the utility if S2
+  
+  # For surveillance states, use the appropriate vector index based on time spent
+  if (any(M_it == "S1")) {
+    # Get index for time-dependent utilities (capped at length of vector)
+    S1_idx <- pmin(pmax(S1_time_it[M_it == "S1"], 1), length(u.S1))
+    u.it[M_it == "S1"] <- u.S1[S1_idx]
+  }
+  
+  if (any(M_it == "S2")) {
+    # Get index for time-dependent utilities (capped at length of vector)
+    S2_idx <- pmin(pmax(S2_time_it[M_it == "S2"], 1), length(u.S2))
+    u.it[M_it == "S2"] <- u.S2[S2_idx]
+  }
+  
   u.it[M_it == "P"]  <- u.P      # update the utility if P
-  QALYs <-  u.it * cl            # calculate the QALYs during cycle t
+  u.it[M_it == "D"]  <- u.D      # update the utility if D
+  
+  QALYs <- u.it * cl            # calculate the QALYs during cycle t
   return(QALYs)                  # return the QALYs
 }
 
@@ -374,6 +525,32 @@ n.i.debug <- 1000  # Use fewer individuals for debugging
 # Run simulation with verbose output
 cat("\n\nRunning ESD simulation:\n")
 sim_esd_debug <- MicroSim(v.M_1[1:n.i.debug], n.i.debug, n.t, v.n, d.c, d.e, verbose = TRUE)
+
+# Print ESD costs and utilities
+cat("\n============== ESD Costs and Utilities ==============\n")
+cat("Costs:\n")
+cat("H1 (ESD procedure cost):", c.H1, "\n")
+cat("S1 surveillance costs:", paste(c.S1, collapse=", "), "\n")
+cat("Palliative care cost:", c.P, "\n")
+
+cat("\nUtilities:\n")
+cat("H1 (PreESD):", u.H1, "\n")
+cat("S1 surveillance utilities:", paste(u.S1, collapse=", "), "\n")
+cat("Palliative care utility:", u.P, "\n")
+cat("Death utility:", u.D, "\n")
+
+cat("\n============== Surgery Costs and Utilities ==============\n")
+cat("Costs:\n")
+cat("H2 (Surgery procedure cost):", c.H2, "\n")
+cat("S2 surveillance costs:", paste(c.S2, collapse=", "), "\n")
+cat("Palliative care cost:", c.P, "\n")
+
+cat("\nUtilities:\n")
+cat("H2 (PreSurgery):", u.H2, "\n")
+cat("S2 surveillance utilities:", paste(u.S2, collapse=", "), "\n")
+cat("Palliative care utility:", u.P, "\n")
+cat("Death utility:", u.D, "\n")
+cat("\n================================================\n\n")
 
 cat("\n\nRunning Surgery simulation:\n")
 sim_surgery_debug <- MicroSim(v.M_2[1:n.i.debug], n.i.debug, n.t, v.n, d.c, d.e, verbose = TRUE)
@@ -413,226 +590,10 @@ table_micro <- data.frame(
 rownames(table_micro) <- c(v.Trt, "* are MCSE values")  # name the rows
 colnames(table_micro) <- c("Costs", "*",  "QALYs", "*", "Incremental Costs", "*", "QALYs Gained", "*", "ICER") # name the columns
 table_micro  # print the table
+print(table_micro)
 
-##################################### Probability Analysis #################################
-# Display the original transition probabilities to verify them
-cat("\n--- Surveillance State Transition Probabilities ---\n")
-
-# ESD Surveillance (S1) probabilities 
-cat("\nESD Surveillance (S1) transition probabilities:\n")
-for (i in 1:9) {
-  cat(sprintf("Cycle %d in S1: Stay=%.4f, to H2=%.4f, to P=%.4f, Death=%.4f\n", 
-              i, p.S1S1[i], p.S1H2[i], p.S1P[i], p.S1D[i]))
-}
-
-# Surgery Surveillance (S2) probabilities
-cat("\nSurgery Surveillance (S2) transition probabilities:\n")
-for (i in 1:9) {
-  cat(sprintf("Cycle %d in S2: Stay=%.4f, to P=%.4f, Death=%.4f\n", 
-              i, p.S2S2[i], p.S2P[i], p.S2D[i]))
-}
-
-# Calculate expected survival time in each state
-calculate_expected_time <- function(prob_stay, max_cycles = 100) {
-  expected_time <- 0
-  probability_still_in_state <- 1
-  
-  for (t in 1:max_cycles) {
-    if (t <= length(prob_stay)) {
-      stay_prob <- prob_stay[t]
-    } else {
-      stay_prob <- prob_stay[length(prob_stay)]  # Use last value for longer periods
-    }
-    
-    expected_time <- expected_time + probability_still_in_state
-    probability_still_in_state <- probability_still_in_state * stay_prob
-  }
-  
-  return(expected_time)
-}
-
-expected_time_S1 <- calculate_expected_time(p.S1S1)
-expected_time_S2 <- calculate_expected_time(p.S2S2)
-
-cat("\n--- Expected Time in Surveillance States ---\n")
-cat(sprintf("Expected time in ESD Surveillance (S1): %.2f cycles\n", expected_time_S1))
-cat(sprintf("Expected time in Surgery Surveillance (S2): %.2f cycles\n", expected_time_S2))
-
-# Calculate cumulative mortality probability over 20 cycles
-simulate_cumulative_mortality <- function(initial_state, n_cycles = 20) {
-  # Setup vectors to track state probabilities
-  states <- c("H1", "H2", "S1", "S2", "P", "D")
-  state_probs <- matrix(0, nrow = n_cycles + 1, ncol = length(states))
-  colnames(state_probs) <- states
-  
-  # Initialize with 100% in the initial state
-  state_probs[1, initial_state] <- 1
-  
-  # Track time spent in S1 and S2 (simplified version)
-  s1_time_distribution <- rep(0, 9)
-  s2_time_distribution <- rep(0, 9)
-  
-  # Simulate cycles
-  for (t in 1:n_cycles) {
-    new_probs <- rep(0, length(states))
-    names(new_probs) <- states
-    
-    # For each current state, calculate new distribution
-    for (s in 1:length(states)) {
-      current_state <- states[s]
-      current_prob <- state_probs[t, current_state]
-      
-      if (current_prob > 0) {
-        # Different transitions based on state
-        if (current_state == "H1") {
-          new_probs["H1"] <- new_probs["H1"] + current_prob * 0
-          new_probs["H2"] <- new_probs["H2"] + current_prob * 0
-          new_probs["S1"] <- new_probs["S1"] + current_prob * p.H1S1
-          new_probs["S2"] <- new_probs["S2"] + current_prob * 0
-          new_probs["P"] <- new_probs["P"] + current_prob * 0
-          new_probs["D"] <- new_probs["D"] + current_prob * p.H1D
-        } 
-        else if (current_state == "H2") {
-          new_probs["H1"] <- new_probs["H1"] + current_prob * 0
-          new_probs["H2"] <- new_probs["H2"] + current_prob * 0
-          new_probs["S1"] <- new_probs["S1"] + current_prob * 0
-          new_probs["S2"] <- new_probs["S2"] + current_prob * p.H2S2
-          new_probs["P"] <- new_probs["P"] + current_prob * p.H2P
-          new_probs["D"] <- new_probs["D"] + current_prob * p.H2D
-        }
-        else if (current_state == "S1") {
-          # Use average S1 probabilities for simplicity
-          avg_S1H2 <- mean(p.S1H2)
-          avg_S1P <- mean(p.S1P)
-          avg_S1D <- mean(p.S1D)
-          avg_S1S1 <- mean(p.S1S1)
-          
-          new_probs["H1"] <- new_probs["H1"] + current_prob * 0
-          new_probs["H2"] <- new_probs["H2"] + current_prob * avg_S1H2
-          new_probs["S1"] <- new_probs["S1"] + current_prob * avg_S1S1
-          new_probs["S2"] <- new_probs["S2"] + current_prob * 0
-          new_probs["P"] <- new_probs["P"] + current_prob * avg_S1P
-          new_probs["D"] <- new_probs["D"] + current_prob * avg_S1D
-        }
-        else if (current_state == "S2") {
-          # Use average S2 probabilities for simplicity
-          avg_S2P <- mean(p.S2P)
-          avg_S2D <- mean(p.S2D)
-          avg_S2S2 <- mean(p.S2S2)
-          
-          new_probs["H1"] <- new_probs["H1"] + current_prob * 0
-          new_probs["H2"] <- new_probs["H2"] + current_prob * 0
-          new_probs["S1"] <- new_probs["S1"] + current_prob * 0
-          new_probs["S2"] <- new_probs["S2"] + current_prob * avg_S2S2
-          new_probs["P"] <- new_probs["P"] + current_prob * avg_S2P
-          new_probs["D"] <- new_probs["D"] + current_prob * avg_S2D
-        }
-        else if (current_state == "P") {
-          new_probs["H1"] <- new_probs["H1"] + current_prob * 0
-          new_probs["H2"] <- new_probs["H2"] + current_prob * 0
-          new_probs["S1"] <- new_probs["S1"] + current_prob * 0
-          new_probs["S2"] <- new_probs["S2"] + current_prob * 0
-          new_probs["P"] <- new_probs["P"] + current_prob * p.PP
-          new_probs["D"] <- new_probs["D"] + current_prob * p.PD
-        }
-        else if (current_state == "D") {
-          new_probs["D"] <- new_probs["D"] + current_prob  # Death is absorbing
-        }
-      }
-    }
-    
-    # Update state probabilities for this cycle
-    state_probs[t + 1, ] <- new_probs
-  }
-  
-  return(state_probs)
-}
-
-# Simulate theoretical state probabilities over time
-cat("\n--- Theoretical State Distribution Over Time ---\n")
-esd_model_theory <- simulate_cumulative_mortality("H1")
-surgery_model_theory <- simulate_cumulative_mortality("H2")
-
-cat("ESD model theoretical distribution at end of 20 cycles:\n")
-print(round(esd_model_theory[n.t + 1, ], 4))
-
-cat("\nSurgery model theoretical distribution at end of 20 cycles:\n")
-print(round(surgery_model_theory[n.t + 1, ], 4))
-
-# Compare with actual simulation results
-cat("\n--- Comparison with Simulation Results ---\n")
-cat("ESD model simulation distribution at end of 20 cycles:\n")
-print(round(sim_esd$TR[n.t + 1, ], 4))
-
-cat("\nSurgery model simulation distribution at end of 20 cycles:\n")
-print(round(sim_surgery$TR[n.t + 1, ], 4))
-
-# Plot the death probability over time
-if (require(ggplot2)) {
-  plot_data <- data.frame(
-    Cycle = 0:n.t,
-    ESD_Theory = esd_model_theory[, "D"],
-    Surgery_Theory = surgery_model_theory[, "D"],
-    ESD_Simulation = sim_esd$TR[, "D"],
-    Surgery_Simulation = sim_surgery$TR[, "D"]
-  )
-  
-  death_plot <- ggplot(plot_data, aes(x = Cycle)) +
-    geom_line(aes(y = ESD_Theory, color = "ESD (Theory)"), size = 1) +
-    geom_line(aes(y = Surgery_Theory, color = "Surgery (Theory)"), size = 1) +
-    geom_line(aes(y = ESD_Simulation, color = "ESD (Simulation)"), linetype = "dashed") +
-    geom_line(aes(y = Surgery_Simulation, color = "Surgery (Simulation)"), linetype = "dashed") +
-    labs(title = "Probability of Death Over Time",
-         x = "Cycle",
-         y = "Probability",
-         color = "Model") +
-    theme_minimal()
-  
-  print(death_plot)
-}
-
-# Calculate average time spent in each surveillance state from simulation
-analyze_surveillance_time <- function(sim_result) {
-  # Extract the state matrix and time tracking matrices
-  m.M <- sim_result$m.M
-  m.S1_time <- sim_result$diag$s1_time
-  m.S2_time <- sim_result$diag$s2_time
-  n.i <- nrow(m.M)
-  
-  # Calculate for each individual
-  total_time_in_S1 <- rep(0, n.i)
-  total_time_in_S2 <- rep(0, n.i)
-  max_time_in_S1 <- rep(0, n.i)
-  max_time_in_S2 <- rep(0, n.i)
-  
-  for (i in 1:n.i) {
-    # Sum all cycles spent in each state
-    total_time_in_S1[i] <- sum(m.M[i, ] == "S1")
-    total_time_in_S2[i] <- sum(m.M[i, ] == "S2")
-    
-    # Find max consecutive time
-    max_time_in_S1[i] <- max(m.S1_time[i, ])
-    max_time_in_S2[i] <- max(m.S2_time[i, ])
-  }
-  
-  # Return summary statistics
-  return(list(
-    S1_avg_time = mean(total_time_in_S1),
-    S1_max_consecutive = mean(max_time_in_S1),
-    S2_avg_time = mean(total_time_in_S2),
-    S2_max_consecutive = mean(max_time_in_S2)
-  ))
-}
-
-# Analyze actual surveillance times from simulation results
-esd_surveillance_stats <- analyze_surveillance_time(sim_esd)
-surgery_surveillance_stats <- analyze_surveillance_time(sim_surgery)
-
-cat("\n--- Average Time in Surveillance States from Simulation ---\n")
-cat("ESD model:\n")
-cat(sprintf("  Average total time in S1: %.2f cycles\n", esd_surveillance_stats$S1_avg_time))
-cat(sprintf("  Average max consecutive time in S1: %.2f cycles\n", esd_surveillance_stats$S1_max_consecutive))
-
-cat("\nSurgery model:\n")
-cat(sprintf("  Average total time in S2: %.2f cycles\n", surgery_surveillance_stats$S2_avg_time))
-cat(sprintf("  Average max consecutive time in S2: %.2f cycles\n", surgery_surveillance_stats$S2_max_consecutive))
+# NEW: Print out QALYs and ICER for both procedures
+cat("\n============== QALYs and ICER ==============\n")
+cat("ESD QALYs:", round(sim_esd$te_hat, 3), "\n")
+cat("Surgery QALYs:", round(sim_surgery$te_hat, 3), "\n")
+cat("ICER:", round(ICER, 0), "\n")
