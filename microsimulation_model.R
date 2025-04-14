@@ -19,106 +19,207 @@
 ############################################################################################
 ################# Code of Appendix A #######################################################
 ############################################################################################
-#rm(list = ls())  # remove any variables in R's memory 
+# Clear environment variables
+rm(list = ls())  # remove any variables in R's memory 
 
+# First, source all required files BEFORE defining functions
+# Source the files with exact case matching to avoid path issues
+source("c:/Users/rma86/Desktop/gastro/functions.r")  # lowercase 'r' to match actual filename
+source("c:/Users/rma86/Desktop/gastro/BetaParmsFromQuantiles.R")
+source("c:/Users/rma86/Desktop/gastro/GammaParmsFromQuantiles.R")
 
-##################################### Generate Random Input ##################################
-# Source all R files in the current directory (except this file itself)
-r_files <- list.files(path = "c:/Users/rma86/Desktop/gastro", pattern = "\\.r$", ignore.case = TRUE, full.names = TRUE)
-r_files <- r_files[!grepl("microsimulation_model\\.r$", r_files, ignore.case = TRUE)]
-for (f in r_files) source(f)
+##################################### Function to run a timed simulation ###################
+run_timed_simulation <- function(time_limit_seconds = 60, n.i = 1000, n.t = 30, verbose = FALSE) {
+  # Start timing
+  start_time <- Sys.time()
+  
+  # Initialize model parameters 
+  initialize_model_parameters(force = TRUE)
+  
+  # Generate random values for probabilities, costs, and utilities
+  generate_new_random_probs(print_output = FALSE)
+  generate_new_random_c_values(print_output = FALSE)
+  generate_new_random_u_values(print_output = FALSE)
 
+  
+  # Define the initial state vectors
+  v.M_1 <- rep("H1", n.i)  # all start in the H1 (ESD) state
+  v.M_2 <- rep("H2", n.i)  # all start in the H2 (Surgery) state
+  
+  # Treatment names
+  v.Trt <- c("ESD", "Surgery")
+  
+  # Discount rates
+  d.c <- d.e <- 0.03  # discount rate for costs and QALYs
+  
+  # Run ESD and Surgery simulations
+  if (verbose) cat("Running ESD simulation:\n")
+  sim_esd <- MicroSim(v.M_1, n.i, n.t, v.n, d.c, d.e, verbose = verbose)
+  
+  # Check if we've exceeded the time limit
+  if (difftime(Sys.time(), start_time, units = "secs") > time_limit_seconds) {
+    if (verbose) cat("Time limit reached, returning partial results\n")
+    return(list(
+      esd = sim_esd,
+      surgery = NULL,
+      completed = FALSE,
+      runtime = difftime(Sys.time(), start_time, units = "secs")
+    ))
+  }
+  
+  if (verbose) cat("Running Surgery simulation:\n")
+  sim_surgery <- MicroSim(v.M_2, n.i, n.t, v.n, d.c, d.e, verbose = verbose)
+  
+  # Calculate incremental values
+  delta_c <- mean(sim_surgery$tc) - mean(sim_esd$tc)
+  delta_e <- mean(sim_surgery$te) - mean(sim_esd$te)
+  icer <- delta_c / delta_e
+  
+  # Return the simulation results
+  return(list(
+    esd = sim_esd,
+    surgery = sim_surgery,
+    delta_c = delta_c,
+    delta_e = delta_e,
+    icer = icer,
+    completed = TRUE,
+    runtime = difftime(Sys.time(), start_time, units = "secs")
+  ))
+}
 
-# Get all c.* and u.* variables (for potential future use)
-p_vars <- get_all_p_vars()
-c_vars <- get_all_c_vars()
-u_vars <- get_all_u_vars()
+##################################### Run multiple simulations ##############################
+run_multiple_simulations <- function(n_sims = 100, time_limit_seconds = 60, n.i = 1000, n.t = 30, verbose = FALSE) {
+  # Prepare storage for results
+  results <- list()
+  completed_sims <- 0
+  total_start_time <- Sys.time()
+  
+  cat("Starting", n_sims, "simulations with time limit of", time_limit_seconds, "seconds each\n")
+  cat("Total individuals per simulation:", n.i, "\n")
+  cat("Total cycles per simulation:", n.t, "\n\n")
+  
+  for (i in 1:n_sims) {
+    cat("Starting simulation", i, "of", n_sims, "\n")
+    sim_start_time <- Sys.time()
+    
+    # Run a single timed simulation
+    sim_result <- run_timed_simulation(time_limit_seconds, n.i, n.t, verbose)
+    
+    # Store results
+    results[[i]] <- sim_result
+    
+    # Update completion counter
+    if (sim_result$completed) {
+      completed_sims <- completed_sims + 1
+    }
+    
+    # Print progress
+    sim_runtime <- difftime(Sys.time(), sim_start_time, units = "secs")
+    cat("Simulation", i, "completed in", round(sim_runtime, 2), "seconds")
+    if (sim_result$completed) {
+      cat(" (ESD QALYs:", round(mean(sim_result$esd$te), 3), 
+          "Surgery QALYs:", round(mean(sim_result$surgery$te), 3), 
+          "ICER:", round(sim_result$icer, 0), ")\n")
+    } else {
+      cat(" (incomplete - time limit reached)\n")
+    }
+  }
+  
+  total_runtime <- difftime(Sys.time(), total_start_time, units = "secs")
+  cat("\nAll simulations completed in", round(total_runtime, 2), "seconds\n")
+  cat("Completed simulations:", completed_sims, "out of", n_sims, "\n\n")
+  
+  # Compile summary statistics
+  icers <- sapply(results[1:completed_sims], function(x) if(x$completed) x$icer else NA)
+  delta_costs <- sapply(results[1:completed_sims], function(x) if(x$completed) x$delta_c else NA)
+  delta_qalys <- sapply(results[1:completed_sims], function(x) if(x$completed) x$delta_e else NA)
+  
+  # Remove NA values
+  icers <- icers[!is.na(icers)]
+  delta_costs <- delta_costs[!is.na(delta_costs)]
+  delta_qalys <- delta_qalys[!is.na(delta_qalys)]
+  
+  # Print summary statistics
+  cat("Summary of completed simulations:\n")
+  cat("Mean ICER:", round(mean(icers), 2), "(SD:", round(sd(icers), 2), ")\n")
+  cat("Mean Incremental Cost:", round(mean(delta_costs), 2), "(SD:", round(sd(delta_costs), 2), ")\n")
+  cat("Mean Incremental QALYs:", round(mean(delta_qalys), 4), "(SD:", round(sd(delta_qalys), 4), ")\n")
+  
+  # Percentiles for ICER
+  icer_percentiles <- quantile(icers, probs = c(0.025, 0.25, 0.5, 0.75, 0.975))
+  cat("\nICER Percentiles:\n")
+  cat("2.5%:", round(icer_percentiles[1], 2), "\n")
+  cat("25%:", round(icer_percentiles[2], 2), "\n")
+  cat("50% (median):", round(icer_percentiles[3], 2), "\n")
+  cat("75%:", round(icer_percentiles[4], 2), "\n")
+  cat("97.5%:", round(icer_percentiles[5], 2), "\n")
+  
+  return(list(
+    results = results,
+    completed_sims = completed_sims,
+    total_runtime = total_runtime,
+    mean_icer = mean(icers),
+    sd_icer = sd(icers),
+    mean_delta_cost = mean(delta_costs),
+    sd_delta_cost = sd(delta_costs),
+    mean_delta_qaly = mean(delta_qalys),
+    sd_delta_qaly = sd(delta_qalys),
+    icer_percentiles = icer_percentiles
+  ))
+}
 
-# # Print first few random probabilities to verify
-# cat("Sample of random probability draws:\n")
-# if (length(random_p_draws) > 0) {
-#   sample_names <- head(names(random_p_draws), 5)
-#   for (name in sample_names) {
-#     cat(name, "=", round(random_p_draws[[name]], 4), "\n")
-#   }
-# }
+# Define functions first, THEN run the simulation
+# ===============================================================================
 
-##################################### Run the simulation ##################################
-# Run a smaller simulation for debugging/inspection purposes
-n.i.debug <- 1000  # Use fewer individuals for debugging
+# Make all objects available in global environment before continuing
+assign("run_timed_simulation", run_timed_simulation, envir = .GlobalEnv)
+assign("run_multiple_simulations", run_multiple_simulations, envir = .GlobalEnv)
 
-# Run simulation with verbose output
-cat("\n\nRunning ESD simulation:\n")
-sim_esd_debug <- MicroSim(v.M_1[1:n.i.debug], n.i.debug, n.t, v.n, d.c, d.e, verbose = TRUE)
+# Now execute the simulation
+# ===============================================================================
 
-# Print ESD costs and utilities
-cat("\n============== ESD Costs and Utilities ==============\n")
-cat("Costs:\n")
-cat("H1 (ESD procedure cost):", c.H1, "\n")
-cat("S1 surveillance costs:", paste(c.S1, collapse=", "), "\n")
-cat("Palliative care cost:", c.P, "\n")
+# Set simulation parameters
+n_simulations <- 100          # Number of simulations to run
+time_limit_per_sim <- 30      # Time limit per simulation in seconds
+individuals_per_sim <- 1000   # Number of individuals per simulation
+cycles_per_sim <- 30          # Number of cycles per simulation
+verbose_output <- FALSE       # Whether to show verbose output
 
-cat("\nUtilities:\n")
-cat("H1 (PreESD):", u.H1, "\n")
-cat("S1 surveillance utilities:", paste(u.S1, collapse=", "), "\n")
-cat("Palliative care utility:", u.P, "\n")
-cat("Death utility:", u.D, "\n")
+cat("Starting simulation with the following parameters:\n")
+cat("Number of simulations:", n_simulations, "\n")
+cat("Time limit per simulation:", time_limit_per_sim, "seconds\n")
+cat("Individuals per simulation:", individuals_per_sim, "\n")
+cat("Cycles per simulation:", cycles_per_sim, "\n")
 
-cat("\n============== Surgery Costs and Utilities ==============\n")
-cat("Costs:\n")
-cat("H2 (Surgery procedure cost):", c.H2, "\n")
-cat("S2 surveillance costs:", paste(c.S2, collapse=", "), "\n")
-cat("Palliative care cost:", c.P, "\n")
-
-cat("\nUtilities:\n")
-cat("H2 (PreSurgery):", u.H2, "\n")
-cat("S2 surveillance utilities:", paste(u.S2, collapse=", "), "\n")
-cat("Palliative care utility:", u.P, "\n")
-cat("Death utility:", u.D, "\n")
-cat("\n================================================\n\n")
-
-cat("\n\nRunning Surgery simulation:\n")
-sim_surgery_debug <- MicroSim(v.M_2[1:n.i.debug], n.i.debug, n.t, v.n, d.c, d.e, verbose = TRUE)
-
-# Run the full simulations for cost-effectiveness analysis (no verbose output to avoid clutter)
-sim_esd <- MicroSim(v.M_1, n.i, n.t, v.n, d.c, d.e, verbose = FALSE)
-sim_surgery <- MicroSim(v.M_2, n.i, n.t, v.n, d.c, d.e, verbose = FALSE)
-
-################################# Cost-effectiveness analysis #############################
-
-# store the mean costs (and the MCSE) of each strategy in a new variable v.C (vector costs)
-v.C  <- c(sim_esd$tc_hat, sim_surgery $tc_hat) 
-se.C <- c(sd(sim_esd$tc), sd(sim_surgery $tc)) / sqrt(n.i)
-# store the mean QALYs (and the MCSE) of each strategy in a new variable v.E (vector health outcomes)
-v.E  <- c(sim_esd$te_hat, sim_surgery $te_hat)
-se.E <- c(sd(sim_esd$te), sd(sim_surgery $te)) / sqrt(n.i)
-
-delta.C <- v.C[2] - v.C[1]                   # calculate incremental costs
-delta.E <- v.E[2] - v.E[1]                   # calculate incremental QALYs
-se.delta.E <- sd(sim_surgery $te - sim_esd$te) / sqrt(n.i) # Monte Carlo squared error (MCSE) of incremental costs
-se.delta.C <- sd(sim_surgery $tc - sim_esd$tc) / sqrt(n.i) # Monte Carlo squared error (MCSE) of incremental QALYs
-ICER    <- delta.C / delta.E                 # calculate the ICER
-results <- c(delta.C, delta.E, ICER)         # store the values in a new variable
-
-# Create full incremental cost-effectiveness analysis table
-table_micro <- data.frame(
-  c(round(v.C, 0),  ""),           # costs per arm
-  c(round(se.C, 0), ""),           # MCSE for costs
-  c(round(v.E, 3),  ""),           # health outcomes per arm
-  c(round(se.E, 3), ""),           # MCSE for health outcomes
-  c("", round(delta.C, 0),   ""),  # incremental costs
-  c("", round(se.delta.C, 0),""),  # MCSE for incremental costs
-  c("", round(delta.E, 3),   ""),  # incremental QALYs 
-  c("", round(se.delta.E, 3),""),  # MCSE for health outcomes (QALYs) gained
-  c("", round(ICER, 0),      "")   # ICER
+# Run the multiple simulations
+multi_sim_results <- run_multiple_simulations(
+  n_sims = n_simulations,
+  time_limit_seconds = time_limit_per_sim,
+  n.i = individuals_per_sim,
+  n.t = cycles_per_sim,
+  verbose = verbose_output
 )
-rownames(table_micro) <- c(v.Trt, "* are MCSE values")  # name the rows
-colnames(table_micro) <- c("Costs", "*",  "QALYs", "*", "Incremental Costs", "*", "QALYs Gained", "*", "ICER") # name the columns
-table_micro  # print the table
-print(table_micro)
 
-# NEW: Print out QALYs and ICER for both procedures
-cat("\n============== QALYs and ICER ==============\n")
-cat("ESD QALYs:", round(sim_esd$te_hat, 3), "\n")
-cat("Surgery QALYs:", round(sim_surgery$te_hat, 3), "\n")
-cat("ICER:", round(ICER, 0), "\n")
+# Optional: Save results to file
+save(multi_sim_results, file = "c:/Users/rma86/Desktop/gastro/simulation_results.RData")
+
+# Optional: Create a histogram of ICERs
+if (require(ggplot2)) {
+  icers <- sapply(multi_sim_results$results[1:multi_sim_results$completed_sims], 
+                 function(x) if(x$completed) x$icer else NA)
+  icers <- icers[!is.na(icers)]
+  
+  # Create histogram
+  hist_data <- data.frame(icer = icers)
+  p <- ggplot(hist_data, aes(x = icer)) +
+    geom_histogram(bins = 30, fill = "skyblue", color = "black") +
+    labs(title = "Distribution of ICERs",
+         x = "ICER (Cost per QALY)",
+         y = "Frequency") +
+    theme_minimal() +
+    geom_vline(xintercept = mean(icers), color = "red", linetype = "dashed") +
+    geom_vline(xintercept = median(icers), color = "blue", linetype = "dashed")
+  
+  # Save plot to file
+  ggsave("c:/Users/rma86/Desktop/gastro/icer_histogram.png", p, width = 8, height = 6)
+}

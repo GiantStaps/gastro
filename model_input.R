@@ -19,10 +19,6 @@ p.H2D    <- 0.0463             # short-term mortality rate after surgery
 p.H2P    <- 0.0082             # probability of clinical failure after ESD
 p.H2S2   <- 1 - p.H2P - p.H2D  # probability of staying in surveillance after surgery
 
-# Pre-calculate S1 and S2 time-dependent transition probabilities
-p.H1S1 <- 1 - p.H1D - p.H1H2  # probability of staying in surveillance after ESD
-p.H2S2 <- 1 - p.H2P - p.H2D  # probability of staying in surveillance after surgery
-
 # S1 state transition probabilities
 p.S1H2 <- c(0,
             0.03,

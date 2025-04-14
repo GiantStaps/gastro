@@ -412,23 +412,35 @@ generate_beta_params <- function(p) {
   beta.parms.from.quantiles(c(q1, q2))
 }
 
-# Function to generate a named list of random beta draws for all p.* variables
-generate_random_p_draws <- function() {
+# Modified function to generate a named list of random beta draws for all p.* variables
+# with constraints for dependent probabilities
+generate_random_p_draws <- function(print_output = FALSE) {
   p_vars <- get_all_p_vars()
-  cat("Processing", length(p_vars), "probability variables\n")
+  if(print_output) cat("Processing", length(p_vars), "probability variables\n")
   random_draws <- list()
   
+  # Define constrained variables that should not be randomly generated
+  constrained_vars <- c("p.H1S1", "p.H2S2", "p.S1S1", "p.S2S2", "p.PP")
+  
   for (name in names(p_vars)) {
-    p_var <- p_vars[[name]]
-    
-    # Print variable information
-    if (is.vector(p_var) && length(p_var) > 1) {
-      cat("Variable:", name, "is a vector with", length(p_var), "elements:", head(p_var), "...\n")
-    } else {
-      cat("Variable:", name, "=", p_var, "\n")
+    # Skip constrained variables - they will be calculated later
+    if (name %in% constrained_vars) {
+      if(print_output) cat("Skipping constrained variable:", name, "\n")
+      next
     }
     
-    # Check if it's a vector probability
+    p_var <- p_vars[[name]]
+    
+    # Print variable information only if requested
+    if(print_output) {
+      if (is.vector(p_var) && length(p_var) > 1) {
+        cat("Variable:", name, "is a vector with", length(p_var), "elements:", head(p_var), "...\n")
+      } else {
+        cat("Variable:", name, "=", p_var, "\n")
+      }
+    }
+    
+    # Handle vector probabilities (such as p.S1H2, p.S1P, p.S1D)
     if (is.vector(p_var) && length(p_var) > 1) {
       # Process vector probabilities element by element
       result_vector <- numeric(length(p_var))
@@ -436,7 +448,7 @@ generate_random_p_draws <- function() {
         p <- p_var[i]
         # Explicitly check for p = 0
         if (!is.numeric(p) || p == 0 || p >= 1) {
-          cat("  Element", i, "value", p, "is zero or invalid, keeping original\n")
+          if(print_output) cat("  Element", i, "value", p, "is zero or invalid, keeping original\n")
           result_vector[i] <- p
         } else {
           # Generate beta parameters and random draw
@@ -445,20 +457,21 @@ generate_random_p_draws <- function() {
             a <- if (!is.null(params$a)) params$a else params[1]
             b <- if (!is.null(params$b)) params$b else params[2]
             result_vector[i] <- rbeta(1, a, b)
-            cat("  Element", i, "value", p, "-> random draw:", result_vector[i], "\n")
+            if(print_output) cat("  Element", i, "value", p, "-> random draw:", result_vector[i], "\n")
           }, error = function(e) {
+            # Always print errors
             cat("  Error for element", i, ":", e$message, "\n")
             result_vector[i] <- p
           })
         }
       }
       random_draws[[name]] <- result_vector
-      cat("  Saved vector result for", name, "\n")
+      if(print_output) cat("  Saved vector result for", name, "\n")
     } else {
       # Handle single value
       # Explicitly check for p = 0
       if (!is.numeric(p_var) || p_var == 0 || p_var >= 1) {
-        cat("  Value", p_var, "is zero or invalid, keeping original\n")
+        if(print_output) cat("  Value", p_var, "is zero or invalid, keeping original\n")
         random_draws[[name]] <- p_var
       } else {
         # Generate beta parameters and random draw
@@ -468,9 +481,12 @@ generate_random_p_draws <- function() {
           b <- if (!is.null(params$b)) params$b else params[2]
           draw <- rbeta(1, a, b)
           random_draws[[name]] <- draw
-          cat("  Generated parameters: a =", a, "b =", b, "\n")
-          cat("  Random draw:", draw, "\n")
+          if(print_output) {
+            cat("  Generated parameters: a =", a, "b =", b, "\n")
+            cat("  Random draw:", draw, "\n")
+          }
         }, error = function(e) {
+          # Always print errors
           cat("  Error:", e$message, "\n")
           random_draws[[name]] <- p_var
         })
@@ -478,44 +494,158 @@ generate_random_p_draws <- function() {
     }
   }
   
-  cat("Final random_draws list contains", length(random_draws), "items\n")
+  # Now calculate constrained variables based on their dependencies
+  
+  # 1. Calculate p.H1S1 = 1 - p.H1D - p.H1H2
+  if ("p.H1D" %in% names(random_draws) && "p.H1H2" %in% names(random_draws)) {
+    p_h1d <- random_draws[["p.H1D"]]
+    p_h1h2 <- random_draws[["p.H1H2"]]
+    
+    # Ensure the sum of probabilities doesn't exceed 1
+    if (p_h1d + p_h1h2 > 0.999) {
+      # Scale down both probabilities to make room for p.H1S1
+      scale_factor <- 0.9 / (p_h1d + p_h1h2)
+      p_h1d <- p_h1d * scale_factor
+      p_h1h2 <- p_h1h2 * scale_factor
+      random_draws[["p.H1D"]] <- p_h1d
+      random_draws[["p.H1H2"]] <- p_h1h2
+      if(print_output) cat("Rescaled p.H1D and p.H1H2 to ensure sum < 1\n")
+    }
+    
+    random_draws[["p.H1S1"]] <- 1 - p_h1d - p_h1h2
+    if(print_output) cat("Calculated constrained p.H1S1 =", random_draws[["p.H1S1"]], "\n")
+  }
+  
+  # 2. Calculate p.H2S2 = 1 - p.H2P - p.H2D
+  if ("p.H2P" %in% names(random_draws) && "p.H2D" %in% names(random_draws)) {
+    p_h2p <- random_draws[["p.H2P"]]
+    p_h2d <- random_draws[["p.H2D"]]
+    
+    # Ensure the sum of probabilities doesn't exceed 1
+    if (p_h2p + p_h2d > 0.999) {
+      # Scale down both probabilities to make room for p.H2S2
+      scale_factor <- 0.9 / (p_h2p + p_h2d)
+      p_h2p <- p_h2p * scale_factor
+      p_h2d <- p_h2d * scale_factor
+      random_draws[["p.H2P"]] <- p_h2p
+      random_draws[["p.H2D"]] <- p_h2d
+      if(print_output) cat("Rescaled p.H2P and p.H2D to ensure sum < 1\n")
+    }
+    
+    random_draws[["p.H2S2"]] <- 1 - p_h2p - p_h2d
+    if(print_output) cat("Calculated constrained p.H2S2 =", random_draws[["p.H2S2"]], "\n")
+  }
+  
+  # 3. Calculate p.S1S1 = 1 - p.S1H2 - p.S1P - p.S1D (vector)
+  if (all(c("p.S1H2", "p.S1P", "p.S1D") %in% names(random_draws))) {
+    p_s1h2 <- random_draws[["p.S1H2"]]
+    p_s1p <- random_draws[["p.S1P"]]
+    p_s1d <- random_draws[["p.S1D"]]
+    
+    # For vector probabilities, calculate p.S1S1 element-wise
+    p_s1s1 <- numeric(length(p_s1h2))
+    
+    for (i in 1:length(p_s1h2)) {
+      # Ensure the sum of vector probabilities doesn't exceed 1 for any element
+      sum_probs <- p_s1h2[i] + p_s1p[i] + p_s1d[i]
+      if (sum_probs > 0.999) {
+        # Scale down probabilities to make room for p.S1S1
+        scale_factor <- 0.9 / sum_probs
+        p_s1h2[i] <- p_s1h2[i] * scale_factor
+        p_s1p[i] <- p_s1p[i] * scale_factor
+        p_s1d[i] <- p_s1d[i] * scale_factor
+        if(print_output) cat("Rescaled p.S1H2[", i, "], p.S1P[", i, "], p.S1D[", i, "] to ensure sum < 1\n", sep="")
+      }
+      p_s1s1[i] <- 1 - p_s1h2[i] - p_s1p[i] - p_s1d[i]
+    }
+    
+    # Update the random draws with potentially rescaled values
+    random_draws[["p.S1H2"]] <- p_s1h2
+    random_draws[["p.S1P"]] <- p_s1p
+    random_draws[["p.S1D"]] <- p_s1d
+    random_draws[["p.S1S1"]] <- p_s1s1
+    
+    if(print_output) cat("Calculated constrained p.S1S1 vector\n")
+  }
+  
+  # 4. Calculate p.S2S2 = 1 - p.S2P - p.S2D (vector)
+  if (all(c("p.S2P", "p.S2D") %in% names(random_draws))) {
+    p_s2p <- random_draws[["p.S2P"]]
+    p_s2d <- random_draws[["p.S2D"]]
+    
+    # For vector probabilities, calculate p.S2S2 element-wise
+    p_s2s2 <- numeric(length(p_s2p))
+    
+    for (i in 1:length(p_s2p)) {
+      # Ensure the sum of vector probabilities doesn't exceed 1 for any element
+      sum_probs <- p_s2p[i] + p_s2d[i]
+      if (sum_probs > 0.999) {
+        # Scale down probabilities to make room for p.S2S2
+        scale_factor <- 0.9 / sum_probs
+        p_s2p[i] <- p_s2p[i] * scale_factor
+        p_s2d[i] <- p_s2d[i] * scale_factor
+        if(print_output) cat("Rescaled p.S2P[", i, "], p.S2D[", i, "] to ensure sum < 1\n", sep="")
+      }
+      p_s2s2[i] <- 1 - p_s2p[i] - p_s2d[i]
+    }
+    
+    # Update the random draws with potentially rescaled values
+    random_draws[["p.S2P"]] <- p_s2p
+    random_draws[["p.S2D"]] <- p_s2d
+    random_draws[["p.S2S2"]] <- p_s2s2
+    
+    if(print_output) cat("Calculated constrained p.S2S2 vector\n")
+  }
+  
+  # 5. Calculate p.PP = 1 - p.PD
+  if ("p.PD" %in% names(random_draws)) {
+    p_pd <- random_draws[["p.PD"]]
+    
+    # Ensure p.PD doesn't exceed 1
+    if (p_pd > 0.999) {
+      p_pd <- 0.999
+      random_draws[["p.PD"]] <- p_pd
+      if(print_output) cat("Capped p.PD at 0.999 to ensure p.PP ≥ 0.001\n")
+    }
+    
+    random_draws[["p.PP"]] <- 1 - p_pd
+    if(print_output) cat("Calculated constrained p.PP =", random_draws[["p.PP"]], "\n")
+  }
+  
+  if(print_output) cat("Final random_draws list contains", length(random_draws), "items\n")
   return(random_draws)
 }
 
 # Function to generate new random probability values and update global environment
-generate_new_random_probs <- function(restore_originals = FALSE) {
-  # Print debug information about global environment
-  cat("Debugging generate_new_random_probs():\n")
-  
+generate_new_random_probs <- function(restore_originals = FALSE, print_output = FALSE) {
   # Check for p.* variables in global environment
   p_vars <- get_all_p_vars(.GlobalEnv)
-  cat("Found", length(p_vars), "p.* variables in global environment\n")
+  if(print_output) {
+    cat("Found", length(p_vars), "p.* variables in global environment\n")
+    cat("First few p.* variables found:\n")
+    print(head(names(p_vars), 5))
+  }
   
   if (length(p_vars) == 0) {
+    # Always print errors
     cat("ERROR: No p.* variables found in global environment.\n")
-    cat("Available variables in .GlobalEnv:\n")
-    print(head(ls(.GlobalEnv), 20))
     return(list())
   }
   
-  # Show first few p variables
-  cat("First few p.* variables found:\n")
-  print(head(names(p_vars), 5))
-  
   # Generate random draws
-  cat("Generating random draws...\n")
-  random_draws <- generate_random_p_draws()
+  if(print_output) cat("Generating random draws...\n")
+  random_draws <- generate_random_p_draws(print_output = print_output)
   
-  cat("Generated", length(random_draws), "random draws\n")
+  if(print_output) cat("Generated", length(random_draws), "random draws\n")
   
   if (length(random_draws) > 0) {
     # Save original values
     original_values <- p_vars
     
-    # Update global probability variables with random draws (update all variables)
+    # Update global probability variables with random draws
     for (name in names(random_draws)) {
       assign(name, random_draws[[name]], envir = .GlobalEnv)
-      cat("Assigned", name, "=", random_draws[[name]], "\n")
+      if(print_output) cat("Assigned", name, "=", random_draws[[name]], "\n")
     }
     
     # Only restore original values if explicitly requested
@@ -523,21 +653,22 @@ generate_new_random_probs <- function(restore_originals = FALSE) {
       for (name in names(original_values)) {
         assign(name, original_values[[name]], envir = .GlobalEnv)
       }
-      cat("Restored original values\n")
+      if(print_output) cat("Restored original values\n")
     }
   } else {
+    # Always print errors
     cat("ERROR: No random values generated\n")
   }
   
-  # Return the random values that were generated
-  return(random_draws)
+  # Return nothing by default
+  if(print_output) return(random_draws) else return(invisible(NULL))
 }
 
 # Improved generate_gamma_params function to handle NaNs and warnings more robustly
-generate_gamma_params <- function(val) {
+generate_gamma_params <- function(val, print_output = FALSE) {
   # Ensure we have positive values to work with
   if(val <= 0) {
-    cat("  Warning: Value", val, "is not positive, using fallback parameterization\n")
+    if(print_output) cat("  Warning: Value", val, "is not positive, using fallback parameterization\n")
     return(list(shape=25, scale=val/20))  # Return reasonable parameters for small values
   }
   
@@ -567,7 +698,7 @@ generate_gamma_params <- function(val) {
       return(params)
     }, error = function(e) {
       # If that fails, use a simpler method with mean and CV
-      cat("  Using direct parameterization for value:", val, "\n")
+      if(print_output) cat("  Using direct parameterization for value:", val, "\n")
       # Use 0.2 as coefficient of variation (SD/mean)
       cv <- 0.2
       shape <- 1/(cv^2)  # Alpha parameter
@@ -586,90 +717,22 @@ generate_gamma_params <- function(val) {
   }
 }
 
-# Revised generate_random_c_draws with element‐by‐element support for vector variables
-generate_random_c_draws <- function() {
-  c_vars <- get_all_c_vars()
-  random_draws <- list()
-  
-  for(name in names(c_vars)) {
-    c_var <- c_vars[[name]]
-    if(is.vector(c_var) && length(c_var) > 1) {
-      result_vector <- numeric(length(c_var))
-      for(i in seq_along(c_var)) {
-        val <- c_var[i]
-        parms <- generate_gamma_params(val)
-        if(is.na(parms)[1]) {
-          result_vector[i] <- val
-        } else {
-          a <- if(!is.null(parms$shape)) parms$shape else parms[1]
-          scale <- if(!is.null(parms$scale)) parms$scale else parms[2]
-          result_vector[i] <- rgamma(1, shape = a, scale = scale)
-        }
-      }
-      random_draws[[name]] <- result_vector
-    } else {
-      val <- c_var
-      parms <- generate_gamma_params(val)
-      if(is.na(parms)[1]) {
-         random_draws[[name]] <- c_var
-      } else {
-         a <- if(!is.null(parms$shape)) parms$shape else parms[1]
-         scale <- if(!is.null(parms$scale)) parms$scale else parms[2]
-         random_draws[[name]] <- rgamma(1, shape = a, scale = scale)
-      }
-    }
-  }
-  return(random_draws)
-}
-
-# Revised generate_random_u_draws with element‐by‐element support for vector variables
-generate_random_u_draws <- function() {
-  u_vars <- get_all_u_vars()
-  random_draws <- list()
-  
-  for(name in names(u_vars)) {
-    u_val <- u_vars[[name]]
-    if(is.vector(u_val) && length(u_val) > 1) {
-      result_vector <- numeric(length(u_val))
-      for(i in seq_along(u_val)) {
-        val <- u_val[i]
-        if(!is.numeric(val) || val <= 0 || val >= 1) {
-          result_vector[i] <- val
-        } else {
-          alpha <- val * 10
-          beta <- (1 - val) * 10
-          result_vector[i] <- rbeta(1, alpha, beta)
-        }
-      }
-      random_draws[[name]] <- result_vector
-    } else {
-      if(!is.numeric(u_val) || u_val <= 0 || u_val >= 1) {
-        random_draws[[name]] <- u_val
-      } else {
-        alpha <- u_val * 10
-        beta <- (1 - u_val) * 10
-        random_draws[[name]] <- rbeta(1, alpha, beta)
-      }
-    }
-  }
-  
-  return(random_draws)
-}
-
 # Fixed generate_random_c_draws with debug output and better vector handling
-generate_random_c_draws <- function() {
+generate_random_c_draws <- function(print_output = FALSE) {
   c_vars <- get_all_c_vars(.GlobalEnv)
-  cat("Processing", length(c_vars), "cost variables\n")
+  if(print_output) cat("Processing", length(c_vars), "cost variables\n")
   random_draws <- list()
   
   for(name in names(c_vars)) {
     c_var <- c_vars[[name]]
     
-    # Print variable information
-    if(is.vector(c_var) && length(c_var) > 1) {
-      cat("Variable:", name, "is a vector with", length(c_var), "elements:", head(c_var), "...\n")
-    } else {
-      cat("Variable:", name, "=", c_var, "\n")
+    # Print variable information only if requested
+    if(print_output) {
+      if(is.vector(c_var) && length(c_var) > 1) {
+        cat("Variable:", name, "is a vector with", length(c_var), "elements:", head(c_var), "...\n")
+      } else {
+        cat("Variable:", name, "=", c_var, "\n")
+      }
     }
     
     if(is.vector(c_var) && length(c_var) > 1) {
@@ -677,142 +740,104 @@ generate_random_c_draws <- function() {
       result_vector <- numeric(length(c_var))
       for(i in seq_along(c_var)) {
         val <- c_var[i]
-        parms <- generate_gamma_params(val)
+        parms <- generate_gamma_params(val, print_output)
         if(is.na(parms)[1]) {
-          cat("  Element", i, "value", val, "is invalid, keeping original\n")
+          if(print_output) cat("  Element", i, "value", val, "is invalid, keeping original\n")
           result_vector[i] <- val
         } else {
           a <- if(!is.null(parms$shape)) parms$shape else parms[1]
           scale <- if(!is.null(parms$scale)) parms$scale else parms[2]
           result_vector[i] <- rgamma(1, shape = a, scale = scale)
-          cat("  Element", i, "value", val, "-> random draw:", result_vector[i], "\n")
+          if(print_output) cat("  Element", i, "value", val, "-> random draw:", result_vector[i], "\n")
         }
       }
       random_draws[[name]] <- result_vector
-      cat("  Saved vector result for", name, "\n")
+      if(print_output) cat("  Saved vector result for", name, "\n")
     } else {
       # Handle single value
       val <- c_var
-      parms <- generate_gamma_params(val)
+      parms <- generate_gamma_params(val, print_output)
       if(is.na(parms)[1]) {
-        cat("  Value", val, "is invalid, keeping original\n")
+        if(print_output) cat("  Value", val, "is invalid, keeping original\n")
         random_draws[[name]] <- val
       } else {
         a <- if(!is.null(parms$shape)) parms$shape else parms[1]
         scale <- if(!is.null(parms$scale)) parms$scale else parms[2]
         draw <- rgamma(1, shape = a, scale = scale)
         random_draws[[name]] <- draw
-        cat("  Generated parameters for", name, ": a =", a, "scale =", scale, "\n")
-        cat("  Random draw:", draw, "\n")
+        if(print_output) {
+          cat("  Generated parameters for", name, ": a =", a, "scale =", scale, "\n")
+          cat("  Random draw:", draw, "\n")
+        }
       }
     }
   }
   
-  cat("Final random_draws list contains", length(random_draws), "items\n")
+  if(print_output) cat("Final random_draws list contains", length(random_draws), "items\n")
   return(random_draws)
 }
 
-# Function to generate random draws for utility variables
-generate_random_u_draws <- function() {
-  u_vars <- get_all_u_vars()
-  
-  # For utilities, we need to ensure values stay between 0 and 1
-  # We'll use a beta distribution for utilities
-  random_draws <- lapply(u_vars, function(u_val) {
-    # Skip vectors, only process single values
-    if(length(u_val) > 1) return(u_val)
-    if(u_val <= 0 || u_val >= 1) return(u_val) # Return as is if out of (0,1) range
-    
-    # Use beta distribution centered at u_val with small variance
-    alpha <- u_val * 10
-    beta <- (1-u_val) * 10
-    rbeta(1, alpha, beta)
-  })
-  
-  return(random_draws)
-}
-
-# Modified generate_new_random_c_values to update both scalar and vector cost variables
-generate_new_random_c_values <- function(return_originals = FALSE) {
-  # Print debug information
-  cat("Debugging generate_new_random_c_values():\n")
-  
+# Function to generate new random cost values and update global environment
+generate_new_random_c_values <- function(return_originals = FALSE, print_output = FALSE) {
   # Get all cost variables from global environment
   c_vars <- get_all_c_vars(.GlobalEnv)
-  cat("Found", length(c_vars), "c.* variables in global environment\n")
-  
-  # Display the cost variables
-  if (length(c_vars) > 0) {
+  if(print_output) {
+    cat("Found", length(c_vars), "c.* variables in global environment\n")
     cat("c.* variables found:\n")
     print(names(c_vars))
-    cat("\n")
-  } else {
+  }
+  
+  if (length(c_vars) == 0) {
+    # Always print errors
     cat("ERROR: No c.* variables found in global environment.\n")
-    cat("Available variables in .GlobalEnv:\n")
-    print(head(ls(.GlobalEnv), 20))
     return(list())
   }
   
   # Generate random draws
-  cat("Generating random c draws...\n")
-  random_c_draws <- generate_random_c_draws()
+  if(print_output) cat("Generating random c draws...\n")
+  random_c_draws <- generate_random_c_draws(print_output = print_output)
   
-  cat("Generated", length(random_c_draws), "random c draws\n")
+  if(print_output) cat("Generated", length(random_c_draws), "random c draws\n")
   
   # Print info about generated values
   if (length(random_c_draws) > 0) {
-    cat("Random c draws:\n")
+    if(print_output) {
+      cat("Random c draws:\n")
+      for (name in names(random_c_draws)) {
+        cat(name, "=", random_c_draws[[name]], "\n")
+      }
+    }
+    
+    # Update global environment
     for (name in names(random_c_draws)) {
-      cat(name, "=", random_c_draws[[name]], "\n")
-      
-      # Update global environment
       assign(name, random_c_draws[[name]], envir = .GlobalEnv)
     }
     
-    # Return the random values
-    cat("Returning list with", length(random_c_draws), "items\n")
-    return(random_c_draws)
+    # Return the random values if requested
+    if(print_output) return(random_c_draws) else return(invisible(NULL))
   } else {
+    # Always print errors
     cat("ERROR: No random c values generated\n")
-    return(list())
-  }
-}
-
-# Modified generate_new_random_u_values to update both scalar and vector utility variables
-generate_new_random_u_values <- function(return_originals = FALSE) {
-  # Generate random draws
-  random_u_draws <- generate_random_u_draws()
-  
-  # Save original values
-  original_values <- get_all_u_vars()
-  
-  # Update global utility variables 
-  for(name in names(random_u_draws)) {
-      assign(name, random_u_draws[[name]], envir = .GlobalEnv)
-      cat("Assigned new", name, "=", random_u_draws[[name]], "\n")
-  }
-  
-  if(return_originals) {
-    return(original_values)
-  } else {
-    return(random_u_draws)
+    return(invisible(NULL))
   }
 }
 
 # Improved generate_random_u_draws function with full debugging support
-generate_random_u_draws <- function() {
+generate_random_u_draws <- function(print_output = FALSE) {
   u_vars <- get_all_u_vars(.GlobalEnv)  # Use global environment like the other functions
-  cat("Processing", length(u_vars), "utility variables\n")
+  if(print_output) cat("Processing", length(u_vars), "utility variables\n")
   random_draws <- list()
   
   for(name in names(u_vars)) {
     u_val <- u_vars[[name]]
     
-    # Print variable information
-    if(is.vector(u_val) && length(u_val) > 1) {
-      cat("Variable:", name, "is a vector with", length(u_val), "elements:", head(u_val), "...\n")
-    } else {
-      cat("Variable:", name, "=", u_val, "\n")
+    # Print variable information only if requested
+    if(print_output) {
+      if(is.vector(u_val) && length(u_val) > 1) {
+        cat("Variable:", name, "is a vector with", length(u_val), "elements:", head(u_val), "...\n")
+      } else {
+        cat("Variable:", name, "=", u_val, "\n")
+      }
     }
     
     if(is.vector(u_val) && length(u_val) > 1) {
@@ -821,104 +846,108 @@ generate_random_u_draws <- function() {
       for(i in seq_along(u_val)) {
         val <- u_val[i]
         if(!is.numeric(val)) {
-          cat("  Element", i, "value", val, "is not numeric, keeping original\n")
+          if(print_output) cat("  Element", i, "value", val, "is not numeric, keeping original\n")
           result_vector[i] <- val
         } else if(val == 0) {
-          cat("  Element", i, "value", val, "is zero, keeping as zero\n")
+          if(print_output) cat("  Element", i, "value", val, "is zero, keeping as zero\n")
           result_vector[i] <- 0
         } else if(val <= 0 || val >= 1) {
-          cat("  Element", i, "value", val, "is outside (0,1), keeping original\n")
+          if(print_output) cat("  Element", i, "value", val, "is outside (0,1), keeping original\n")
           result_vector[i] <- val
         } else {
           alpha <- val * 10
           beta <- (1 - val) * 10
           result_vector[i] <- rbeta(1, alpha, beta)
-          cat("  Element", i, "value", val, "-> random draw:", result_vector[i], "\n")
+          if(print_output) cat("  Element", i, "value", val, "-> random draw:", result_vector[i], "\n")
         }
       }
       random_draws[[name]] <- result_vector
-      cat("  Saved vector result for", name, "\n")
+      if(print_output) cat("  Saved vector result for", name, "\n")
     } else {
       # Handle single value
       if(!is.numeric(u_val)) {
-        cat("  Value", u_val, "is not numeric, keeping original\n")
+        if(print_output) cat("  Value", u_val, "is not numeric, keeping original\n")
         random_draws[[name]] <- u_val
       } else if(u_val == 0) {
-        cat("  Value", u_val, "is zero, keeping as zero\n")
+        if(print_output) cat("  Value", u_val, "is zero, keeping as zero\n")
         random_draws[[name]] <- 0
       } else if(u_val <= 0 || u_val >= 1) {
-        cat("  Value", u_val, "is outside (0,1), keeping original\n")
+        if(print_output) cat("  Value", u_val, "is outside (0,1), keeping original\n")
         random_draws[[name]] <- u_val
       } else {
         alpha <- u_val * 10
         beta <- (1 - u_val) * 10
         draw <- rbeta(1, alpha, beta)
         random_draws[[name]] <- draw
-        cat("  Generated parameters: alpha =", alpha, "beta =", beta, "\n")
-        cat("  Random draw:", draw, "\n")
+        if(print_output) {
+          cat("  Generated parameters: alpha =", alpha, "beta =", beta, "\n")
+          cat("  Random draw:", draw, "\n")
+        }
       }
     }
   }
   
-  cat("Final random_draws list contains", length(random_draws), "items\n")
+  if(print_output) cat("Final random_draws list contains", length(random_draws), "items\n")
   return(random_draws)
 }
 
-# Modified generate_new_random_u_values with better debugging
-generate_new_random_u_values <- function(return_originals = FALSE) {
-  # Print debug information
-  cat("Debugging generate_new_random_u_values():\n")
-  
+# Function to generate new random utility values and update global environment
+generate_new_random_u_values <- function(return_originals = FALSE, print_output = FALSE) {
   # Get all utility variables from global environment
   u_vars <- get_all_u_vars(.GlobalEnv)
-  cat("Found", length(u_vars), "u.* variables in global environment\n")
-  
-  # Display the utility variables
-  if (length(u_vars) > 0) {
+  if(print_output) {
+    cat("Found", length(u_vars), "u.* variables in global environment\n")
     cat("u.* variables found:\n")
     print(names(u_vars))
-    cat("\n")
-  } else {
+  }
+  
+  if (length(u_vars) == 0) {
+    # Always print errors
     cat("ERROR: No u.* variables found in global environment.\n")
-    cat("Available variables in .GlobalEnv:\n")
-    print(head(ls(.GlobalEnv), 20))
     return(list())
   }
   
   # Generate random draws
-  cat("Generating random u draws...\n")
-  random_u_draws <- generate_random_u_draws()
+  if(print_output) cat("Generating random u draws...\n")
+  random_u_draws <- generate_random_u_draws(print_output = print_output)
   
-  cat("Generated", length(random_u_draws), "random u draws\n")
+  if(print_output) cat("Generated", length(random_u_draws), "random u draws\n")
   
   # Print info about generated values
   if (length(random_u_draws) > 0) {
-    cat("Random u draws:\n")
-    for (name in names(random_u_draws)) {
-      cat(name, "=", random_u_draws[[name]], "\n")
-      
-      # Update global environment
-      assign(name, random_u_draws[[name]], envir = .GlobalEnv)
+    if(print_output) {
+      cat("Random u draws:\n")
+      for (name in names(random_u_draws)) {
+        cat(name, "=", random_u_draws[[name]], "\n")
+      }
     }
     
-    # Return the random values
-    cat("Returning list with", length(random_u_draws), "items\n")
-    return(random_u_draws)
+    # Update global environment
+    for (name in names(random_u_draws)) {
+      assign(name, random_u_draws[[name]], envir = .GlobalEnv)
+      if(print_output) cat("Assigned new", name, "=", random_u_draws[[name]], "\n")
+    }
+    
+    # Return the random values if requested
+    if(print_output) return(random_u_draws) else return(invisible(NULL))
   } else {
+    # Always print errors
     cat("ERROR: No random u values generated\n")
-    return(list())
+    return(invisible(NULL))
   }
 }
 
-# Also update get_all_u_vars to use .GlobalEnv by default like the other functions
-get_all_u_vars <- function(env = .GlobalEnv) {
-  u_names <- ls(env, pattern = "^u\\.")
-  u_list <- setNames(lapply(u_names, function(nm) get(nm, envir = env)), u_names)
-  return(u_list)
-}
-
 # Function to initialize model parameters in the global environment
-initialize_model_parameters <- function() {
+initialize_model_parameters <- function(force = TRUE) {
+  # Check if parameters already exist
+  if (!force && length(ls(pattern = "^p\\.", envir = .GlobalEnv)) > 0 && 
+      length(ls(pattern = "^c\\.", envir = .GlobalEnv)) > 0 && 
+      length(ls(pattern = "^u\\.", envir = .GlobalEnv)) > 0) {
+    cat("Model parameters already exist in global environment.\n")
+    cat("To force re-initialization, call with force=TRUE\n")
+    return(FALSE)
+  }
+  
   # Transition probabilities (per cycle)
   assign("p.H1D", 0.0050, envir = .GlobalEnv)              # 3 month mortality rate after ESD)
   assign("p.H1H2", 0.0886, envir = .GlobalEnv)              # probability of switching to surgery after ESD
@@ -972,4 +1001,6 @@ initialize_model_parameters <- function() {
   cat("Probability (p.*) variables:", length(ls(pattern = "^p\\.", envir = .GlobalEnv)), "\n")
   cat("Cost (c.*) variables:", length(ls(pattern = "^c\\.", envir = .GlobalEnv)), "\n")
   cat("Utility (u.*) variables:", length(ls(pattern = "^u\\.", envir = .GlobalEnv)), "\n")
+
+  return(TRUE)
 }
