@@ -378,7 +378,7 @@ Effs <- function(M_it, S1_time_it = 0, S2_time_it = 0, cl = 1) {
 
 ### Helper functions 
 # Collect all variables whose names start with "p."
-get_all_p_vars <- function(env = parent.frame()) {
+get_all_p_vars <- function(env = .GlobalEnv) {  # changed default env from parent.frame() to .GlobalEnv
   p_names <- ls(env, pattern = "^p\\.")
   p_list <- setNames(lapply(p_names, function(nm) get(nm, envir = env)), p_names)
   return(p_list)
@@ -398,21 +398,32 @@ get_all_u_vars <- function(env = parent.frame()) {
   return(u_list)
 }
 
+# Revised generate_beta_params: always use the quantile-based method without special handling
 generate_beta_params <- function(p) {
-  # Ensure p is within (0,1) and adjust quantiles to stay in (0,1)
+  # Ensure p is strictly in (0,1)
+  if(p <= 0) p <- 1e-8
+  if(p >= 1) p <- 1 - 1e-8
   q1 <- max(min(p * 0.8, 1 - 1e-8), 1e-8)
   q2 <- max(min(p * 1.2, 1 - 1e-8), 1e-8)
-  if (q1 > q2) { tmp <- q1; q1 <- q2; q2 <- tmp }
+  if(q1 > q2) { tmp <- q1; q1 <- q2; q2 <- tmp }
   beta.parms.from.quantiles(c(q1, q2))
 }
 
 # Function to generate a named list of random beta draws for all p.* variables
 generate_random_p_draws <- function() {
   p_vars <- get_all_p_vars()
+  cat("Processing", length(p_vars), "probability variables\n")
   random_draws <- list()
   
   for (name in names(p_vars)) {
     p_var <- p_vars[[name]]
+    
+    # Print variable information
+    if (is.vector(p_var) && length(p_var) > 1) {
+      cat("Variable:", name, "is a vector with", length(p_var), "elements:", head(p_var), "...\n")
+    } else {
+      cat("Variable:", name, "=", p_var, "\n")
+    }
     
     # Check if it's a vector probability
     if (is.vector(p_var) && length(p_var) > 1) {
@@ -421,7 +432,7 @@ generate_random_p_draws <- function() {
       for (i in 1:length(p_var)) {
         p <- p_var[i]
         if (!is.numeric(p) || p <= 0 || p >= 1) {
-          # Skip invalid probabilities
+          cat("  Element", i, "value", p, "is invalid, keeping original\n")
           result_vector[i] <- p
         } else {
           # Generate beta parameters and random draw
@@ -430,17 +441,19 @@ generate_random_p_draws <- function() {
             a <- if (!is.null(params$a)) params$a else params[1]
             b <- if (!is.null(params$b)) params$b else params[2]
             result_vector[i] <- rbeta(1, a, b)
+            cat("  Element", i, "value", p, "-> random draw:", result_vector[i], "\n")
           }, error = function(e) {
-            # If error, keep original value
+            cat("  Error for element", i, ":", e$message, "\n")
             result_vector[i] <- p
           })
         }
       }
       random_draws[[name]] <- result_vector
+      cat("  Saved vector result for", name, "\n")
     } else {
       # Handle single value
       if (!is.numeric(p_var) || p_var <= 0 || p_var >= 1) {
-        # Keep invalid values unchanged
+        cat("  Value", p_var, "is invalid, keeping original\n")
         random_draws[[name]] <- p_var
       } else {
         # Generate beta parameters and random draw
@@ -448,15 +461,19 @@ generate_random_p_draws <- function() {
           params <- generate_beta_params(p_var)
           a <- if (!is.null(params$a)) params$a else params[1]
           b <- if (!is.null(params$b)) params$b else params[2]
-          random_draws[[name]] <- rbeta(1, a, b)
+          draw <- rbeta(1, a, b)
+          random_draws[[name]] <- draw
+          cat("  Generated parameters: a =", a, "b =", b, "\n")
+          cat("  Random draw:", draw, "\n")
         }, error = function(e) {
-          # If error, keep original value
+          cat("  Error:", e$message, "\n")
           random_draws[[name]] <- p_var
         })
       }
     }
   }
   
+  cat("Final random_draws list contains", length(random_draws), "items\n")
   return(random_draws)
 }
 
@@ -490,7 +507,7 @@ generate_new_random_probs <- function(restore_originals = FALSE) {
     # Save original values
     original_values <- p_vars
     
-    # Update global probability variables with random draws
+    # Update global probability variables with random draws (update all variables)
     for (name in names(random_draws)) {
       assign(name, random_draws[[name]], envir = .GlobalEnv)
       cat("Assigned", name, "=", random_draws[[name]], "\n")

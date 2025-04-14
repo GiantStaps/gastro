@@ -28,55 +28,20 @@ r_files <- list.files(path = "c:/Users/rma86/Desktop/gastro", pattern = "\\.r$",
 r_files <- r_files[!grepl("microsimulation_model\\.r$", r_files, ignore.case = TRUE)]
 for (f in r_files) source(f)
 
-# Function to generate a named list of random beta draws for all p.* variables
-generate_random_p_draws <- function() {
-  p_vars <- get_all_p_vars()
-  beta_params_list <- lapply(p_vars, generate_beta_params)
-  random_draws <- mapply(function(parms, name) {
-    a <- if (!is.null(parms$a)) parms$a else parms[1]
-    b <- if (!is.null(parms$b)) parms$b else parms[2]
-    rbeta(1, a, b)
-  }, beta_params_list, names(beta_params_list), SIMPLIFY = FALSE)
-  return(random_draws)
-}
-
-# Generate and store the random beta draws at the top of the simulation
-random_p_draws <- generate_random_p_draws()
-
-# Function to run simulation with a new set of random probability parameters
-run_simulation_with_new_parameters <- function() {
-  # Generate new random draws
-  random_p_draws <- generate_random_p_draws()
-  
-  # Temporarily save original values
-  original_values <- get_all_p_vars()
-  
-  # Update global probability variables with random draws
-  for (name in names(random_p_draws)) {
-    assign(name, random_p_draws[[name]], envir = .GlobalEnv)
-  }
-  
-  # Run the simulation code here...
-  # [Simulation code would go here]
-  
-  # Restore original values if needed
-  for (name in names(original_values)) {
-    assign(name, original_values[[name]], envir = .GlobalEnv)
-  }
-}
 
 # Get all c.* and u.* variables (for potential future use)
+p_vars <- get_all_p_vars()
 c_vars <- get_all_c_vars()
 u_vars <- get_all_u_vars()
 
-# Print first few random probabilities to verify
-cat("Sample of random probability draws:\n")
-if (length(random_p_draws) > 0) {
-  sample_names <- head(names(random_p_draws), 5)
-  for (name in sample_names) {
-    cat(name, "=", round(random_p_draws[[name]], 4), "\n")
-  }
-}
+# # Print first few random probabilities to verify
+# cat("Sample of random probability draws:\n")
+# if (length(random_p_draws) > 0) {
+#   sample_names <- head(names(random_p_draws), 5)
+#   for (name in sample_names) {
+#     cat(name, "=", round(random_p_draws[[name]], 4), "\n")
+#   }
+# }
 
 ##################################### Run the simulation ##################################
 # Run a smaller simulation for debugging/inspection purposes

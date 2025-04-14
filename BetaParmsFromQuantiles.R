@@ -258,11 +258,3 @@ beta.parms.from.quantiles <- function(q, p=c(0.025,0.975),
   list(a=parms$theta[1], b=parms$theta[2], last.change=parms$last.change, niter=parms$niter, q=q, p=p, p.check=p.check)
 }
 
-generate_beta_params <- function(p) {
-  # Ensure p is within (0,1) and adjust quantiles to stay in (0,1)
-  q1 <- max(min(p * 0.8, 1 - 1e-8), 1e-8)
-  q2 <- max(min(p * 1.2, 1 - 1e-8), 1e-8)
-  if (q1 > q2) { tmp <- q1; q1 <- q2; q2 <- tmp }
-  beta.parms.from.quantiles(c(q1, q2))
-}
-
