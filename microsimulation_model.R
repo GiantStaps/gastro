@@ -24,9 +24,9 @@ rm(list = ls())  # remove any variables in R's memory
 
 # First, source all required files BEFORE defining functions
 # Source the files with exact case matching to avoid path issues
-source("c:/Users/rma86/Desktop/gastro/functions.r")  # lowercase 'r' to match actual filename
-source("c:/Users/rma86/Desktop/gastro/BetaParmsFromQuantiles.R")
-source("c:/Users/rma86/Desktop/gastro/GammaParmsFromQuantiles.R")
+source("./functions.r")  # lowercase 'r' to match actual filename
+source("./BetaParmsFromQuantiles.R")
+source("./GammaParmsFromQuantiles.R")
 
 ##################################### Function to run a timed simulation ###################
 run_timed_simulation <- function(time_limit_seconds = 60, n.i = 1000, n.t = 30, verbose = FALSE) {

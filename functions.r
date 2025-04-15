@@ -1,6 +1,6 @@
 # Fix source statement to use quotes
-source("c:/Users/rma86/Desktop/gastro/BetaParmsFromQuantiles.R")
-source("c:/Users/rma86/Desktop/gastro/GammaParmsFromQuantiles.R")
+source("BetaParmsFromQuantiles.R")
+source("GammaParmsFromQuantiles.R")
 
 ##################################### Functions ###########################################
 
