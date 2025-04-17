@@ -29,12 +29,15 @@ source("./BetaParmsFromQuantiles.R")
 source("./GammaParmsFromQuantiles.R")
 
 ##################################### Function to run a timed simulation ###################
-run_timed_simulation <- function(time_limit_seconds = 60, n.i = 1000, n.t = 30, verbose = FALSE) {
+run_timed_simulation <- function(time_limit_seconds = 60, n.i = 1000, n.t = 30, verbose = FALSE, sim_index = 1) {
   # Start timing
   start_time <- Sys.time()
   
   # Initialize model parameters 
   initialize_model_parameters(force = TRUE)
+  
+  # Use simulation index to create a unique seed for each simulation
+  set.seed(12345 + sim_index)
   
   # Generate random values for probabilities, costs, and utilities
   generate_new_random_probs(print_output = FALSE)
@@ -54,7 +57,7 @@ run_timed_simulation <- function(time_limit_seconds = 60, n.i = 1000, n.t = 30, 
   
   # Run ESD and Surgery simulations
   if (verbose) cat("Running ESD simulation:\n")
-  sim_esd <- MicroSim(v.M_1, n.i, n.t, v.n, d.c, d.e, verbose = verbose)
+  sim_esd <- MicroSim(v.M_1, n.i, n.t, v.n, d.c, d.e, verbose = verbose, seed = (12345 + sim_index*2))
   
   # Check if we've exceeded the time limit
   if (difftime(Sys.time(), start_time, units = "secs") > time_limit_seconds) {
@@ -68,7 +71,7 @@ run_timed_simulation <- function(time_limit_seconds = 60, n.i = 1000, n.t = 30, 
   }
   
   if (verbose) cat("Running Surgery simulation:\n")
-  sim_surgery <- MicroSim(v.M_2, n.i, n.t, v.n, d.c, d.e, verbose = verbose)
+  sim_surgery <- MicroSim(v.M_2, n.i, n.t, v.n, d.c, d.e, verbose = verbose, seed = (12345 + sim_index*2 + 1))
   
   # Calculate incremental values
   delta_c <- mean(sim_surgery$tc) - mean(sim_esd$tc)
@@ -88,7 +91,7 @@ run_timed_simulation <- function(time_limit_seconds = 60, n.i = 1000, n.t = 30, 
 }
 
 ##################################### Run multiple simulations ##############################
-run_multiple_simulations <- function(n_sims = 100, time_limit_seconds = 60, n.i = 1000, n.t = 30, verbose = FALSE) {
+run_multiple_simulations <- function(n_sims = 1000, time_limit_seconds = 60, n.i = 1000, n.t = 30, verbose = FALSE) {
   # Prepare storage for results
   results <- list()
   completed_sims <- 0
@@ -98,12 +101,23 @@ run_multiple_simulations <- function(n_sims = 100, time_limit_seconds = 60, n.i 
   cat("Total individuals per simulation:", n.i, "\n")
   cat("Total cycles per simulation:", n.t, "\n\n")
   
+  # Create results directory if it doesn't exist
+  results_dir <- "./results"
+  if (!dir.exists(results_dir)) {
+    dir.create(results_dir)
+  }
+  
+  # Initialize results file with headers
+  results_file <- file.path(results_dir, "simulation_results_live.csv")
+  write("simulation,esd_qalys,surgery_qalys,esd_cost,surgery_cost,delta_qalys,delta_cost,icer", 
+        file = results_file)
+  
   for (i in 1:n_sims) {
     cat("Starting simulation", i, "of", n_sims, "\n")
     sim_start_time <- Sys.time()
     
     # Run a single timed simulation
-    sim_result <- run_timed_simulation(time_limit_seconds, n.i, n.t, verbose)
+    sim_result <- run_timed_simulation(time_limit_seconds, n.i, n.t, verbose, sim_index = i)
     
     # Store results
     results[[i]] <- sim_result
@@ -113,13 +127,29 @@ run_multiple_simulations <- function(n_sims = 100, time_limit_seconds = 60, n.i 
       completed_sims <- completed_sims + 1
     }
     
-    # Print progress
+    # Print progress with more detailed information
     sim_runtime <- difftime(Sys.time(), sim_start_time, units = "secs")
     cat("Simulation", i, "completed in", round(sim_runtime, 2), "seconds")
+    
     if (sim_result$completed) {
-      cat(" (ESD QALYs:", round(mean(sim_result$esd$te), 3), 
-          "Surgery QALYs:", round(mean(sim_result$surgery$te), 3), 
+      # Calculate mean costs and QALYs for reporting
+      esd_qalys <- mean(sim_result$esd$te)
+      surgery_qalys <- mean(sim_result$surgery$te)
+      esd_cost <- mean(sim_result$esd$tc)
+      surgery_cost <- mean(sim_result$surgery$tc)
+      
+      # Print detailed output including costs
+      cat(" (ESD Cost:", round(esd_cost, 0), 
+          "Surgery Cost:", round(surgery_cost, 0),
+          "ESD QALYs:", round(esd_qalys, 3), 
+          "Surgery QALYs:", round(surgery_qalys, 3), 
           "ICER:", round(sim_result$icer, 0), ")\n")
+      
+      # Write results to file line by line immediately after each simulation
+      result_line <- paste(i, esd_qalys, surgery_qalys, esd_cost, surgery_cost, 
+                          sim_result$delta_e, sim_result$delta_c, sim_result$icer, 
+                          sep = ",")
+      write(result_line, file = results_file, append = TRUE)
     } else {
       cat(" (incomplete - time limit reached)\n")
     }
@@ -201,7 +231,50 @@ multi_sim_results <- run_multiple_simulations(
 )
 
 # Optional: Save results to file
-save(multi_sim_results, file = "c:/Users/rma86/Desktop/gastro/simulation_results.RData")
+results_dir <- "./results"
+# Create results directory if it doesn't exist
+if (!dir.exists(results_dir)) {
+  dir.create(results_dir)
+}
+save(multi_sim_results, file = file.path(results_dir, "simulation_results.RData"))
+
+# Enhanced post-processing to store detailed results
+# Extract and save all QALYs and ICERs
+all_results <- data.frame(
+  simulation = integer(),
+  esd_qalys_mean = numeric(),
+  esd_qalys_sd = numeric(),
+  surgery_qalys_mean = numeric(), 
+  surgery_qalys_sd = numeric(),
+  esd_costs_mean = numeric(),
+  esd_costs_sd = numeric(),
+  surgery_costs_mean = numeric(),
+  surgery_costs_sd = numeric(),
+  delta_qalys = numeric(),
+  delta_costs = numeric(),
+  icer = numeric()
+)
+
+# Populate the data frame with results from each simulation
+for (i in 1:multi_sim_results$completed_sims) {
+  if (multi_sim_results$results[[i]]$completed) {
+    all_results[i, "simulation"] <- i
+    all_results[i, "esd_qalys_mean"] <- mean(multi_sim_results$results[[i]]$esd$te)
+    all_results[i, "esd_qalys_sd"] <- sd(multi_sim_results$results[[i]]$esd$te)
+    all_results[i, "surgery_qalys_mean"] <- mean(multi_sim_results$results[[i]]$surgery$te)
+    all_results[i, "surgery_qalys_sd"] <- sd(multi_sim_results$results[[i]]$surgery$te)
+    all_results[i, "esd_costs_mean"] <- mean(multi_sim_results$results[[i]]$esd$tc)
+    all_results[i, "esd_costs_sd"] <- sd(multi_sim_results$results[[i]]$esd$tc)
+    all_results[i, "surgery_costs_mean"] <- mean(multi_sim_results$results[[i]]$surgery$tc)
+    all_results[i, "surgery_costs_sd"] <- sd(multi_sim_results$results[[i]]$surgery$tc)
+    all_results[i, "delta_qalys"] <- multi_sim_results$results[[i]]$delta_e
+    all_results[i, "delta_costs"] <- multi_sim_results$results[[i]]$delta_c
+    all_results[i, "icer"] <- multi_sim_results$results[[i]]$icer
+  }
+}
+
+# Save the detailed results
+write.csv(all_results, file = file.path(results_dir, "detailed_simulation_results.csv"), row.names = FALSE)
 
 # Optional: Create a histogram of ICERs
 if (require(ggplot2)) {
@@ -221,5 +294,72 @@ if (require(ggplot2)) {
     geom_vline(xintercept = median(icers), color = "blue", linetype = "dashed")
   
   # Save plot to file
-  ggsave("c:/Users/rma86/Desktop/gastro/icer_histogram.png", p, width = 8, height = 6)
+  ggsave(file.path(results_dir, "icer_histogram.png"), p, width = 8, height = 6)
+  
+  # Create a scatterplot of costs vs QALYs
+  if (nrow(all_results) > 0) {
+    scatter_data <- data.frame(
+      delta_qalys = all_results$delta_qalys,
+      delta_costs = all_results$delta_costs
+    )
+    
+    p2 <- ggplot(scatter_data, aes(x = delta_qalys, y = delta_costs)) +
+      geom_point(color = "blue", alpha = 0.6) +
+      geom_hline(yintercept = 0, linetype = "dashed", color = "gray") +
+      geom_vline(xintercept = 0, linetype = "dashed", color = "gray") +
+      labs(title = "Cost-Effectiveness Plane",
+           x = "Incremental QALYs",
+           y = "Incremental Costs") +
+      theme_minimal()
+    
+    # Add lines for different WTP thresholds
+    wtp_thresholds <- c(20000, 50000, 100000)
+    for (wtp in wtp_thresholds) {
+      p2 <- p2 + geom_abline(slope = wtp, intercept = 0, 
+                           linetype = "dotted", color = "red", alpha = 0.5)
+    }
+    
+    # Save the cost-effectiveness plane
+    ggsave(file.path(results_dir, "cost_effectiveness_plane.png"), p2, width = 8, height = 6)
+    
+    # Create boxplots for QALYs by strategy
+    qalys_long <- data.frame(
+      Strategy = rep(c("ESD", "Surgery"), each = nrow(all_results)),
+      QALYs = c(all_results$esd_qalys_mean, all_results$surgery_qalys_mean)
+    )
+    
+    p3 <- ggplot(qalys_long, aes(x = Strategy, y = QALYs, fill = Strategy)) +
+      geom_boxplot() +
+      labs(title = "QALYs by Strategy", 
+           y = "QALYs",
+           x = "") +
+      theme_minimal()
+    
+    ggsave(file.path(results_dir, "qalys_boxplot.png"), p3, width = 8, height = 6)
+  }
 }
+
+# Optional: Create a real-time monitoring function to track progress during long simulations
+monitor_simulation_progress <- function(results_file = "./results/simulation_results_live.csv") {
+  if (file.exists(results_file)) {
+    # Read the current results
+    results <- read.csv(results_file)
+    
+    # Print summary statistics
+    cat("\nCurrent simulation progress:\n")
+    cat("Completed simulations:", nrow(results), "\n")
+    
+    if (nrow(results) > 0) {
+      cat("Mean ESD QALYs:", round(mean(results$esd_qalys), 3), "(SD:", round(sd(results$esd_qalys), 3), ")\n")
+      cat("Mean Surgery QALYs:", round(mean(results$surgery_qalys), 3), "(SD:", round(sd(results$surgery_qalys), 3), ")\n")
+      cat("Mean ESD Cost:", round(mean(results$esd_cost), 0), "(SD:", round(sd(results$esd_cost), 0), ")\n")
+      cat("Mean Surgery Cost:", round(mean(results$surgery_cost), 0), "(SD:", round(sd(results$surgery_cost), 0), ")\n")
+      cat("Mean ICER:", round(mean(results$icer), 0), "(SD:", round(sd(results$icer), 0), ")\n")
+    }
+  } else {
+    cat("No simulation results file found at", results_file, "\n")
+  }
+}
+
+# Make monitoring function available in global environment
+assign("monitor_simulation_progress", monitor_simulation_progress, envir = .GlobalEnv)
