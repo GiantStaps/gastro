@@ -4,9 +4,7 @@ source("GammaParmsFromQuantiles.R")
 
 ##################################### Functions ###########################################
 
-# The MicroSim function for the simple microsimulation of the 'Sick-Sicker' model keeps track of what happens to each individual during each cycle. 
-
-MicroSim <- function(v.M, n.i, n.t, v.n, d.c, d.e, TR.out = TRUE, TS.out = TRUE, seed = 1, verbose = TRUE) {
+MicroSim <- function(v.M, n.i, n.t, v.n, d.c, d.e, TR.out = TRUE, TS.out = TRUE, seed = 1, verbose = TRUE, output_json = NULL) {
   # Arguments:  
   # v.M:     vector of initial states for individuals 
   # n.i:     number of simulated individuals
@@ -55,8 +53,7 @@ MicroSim <- function(v.M, n.i, n.t, v.n, d.c, d.e, TR.out = TRUE, TS.out = TRUE,
     s1_substate_tracker <- matrix(0, nrow = n.t+1, ncol = 9)
     s2_substate_tracker <- matrix(0, nrow = n.t+1, ncol = 9)
   }
-    for (i in 1:n.i) {
-    set.seed(seed + i)                  # set the seed for every individual for the random number generator
+  for (i in 1:n.i) {
     m.C[i, 1] <- Costs(m.M[i, 1], 0, 0)  # estimate costs per individual for the initial health state 
     m.E[i, 1] <- Effs(m.M[i, 1], 0, 0)  # estimate QALYs per individual for the initial health state
     
@@ -86,7 +83,7 @@ MicroSim <- function(v.M, n.i, n.t, v.n, d.c, d.e, TR.out = TRUE, TS.out = TRUE,
       from_state <- match(m.M[i, t], v.n)
       to_state <- match(m.M[i, t + 1], v.n)
       m.trans_count[from_state, to_state] <- m.trans_count[from_state, to_state] + 1
-        m.C[i, t + 1] <- Costs(m.M[i, t + 1], m.S1_time[i, t + 1], m.S2_time[i, t + 1])   # estimate costs per individual during cycle t + 1
+      m.C[i, t + 1] <- Costs(m.M[i, t + 1], m.S1_time[i, t + 1], m.S2_time[i, t + 1])   # estimate costs per individual during cycle t + 1
       m.E[i, t + 1] <- Effs(m.M[i, t + 1], m.S1_time[i, t + 1], m.S2_time[i, t + 1])   # estimate QALYs per individual during cycle t + 1
       
       # Update time counters for surveillance states
@@ -209,7 +206,7 @@ MicroSim <- function(v.M, n.i, n.t, v.n, d.c, d.e, TR.out = TRUE, TS.out = TRUE,
     # Print transition frequencies
     cat("\nTotal transitions between states:\n")
     print(m.trans_count)
-      # Print empirical transition probabilities
+    # Print empirical transition probabilities
     cat("\nEmpirical transition matrix (proportion of transitions):\n")
     # Handle division by zero (states with no transitions)
     row_sums <- rowSums(m.trans_count)
@@ -234,6 +231,37 @@ MicroSim <- function(v.M, n.i, n.t, v.n, d.c, d.e, TR.out = TRUE, TS.out = TRUE,
   
   results <- list(m.M = m.M, m.C = m.C, m.E = m.E, tc = tc, te = te, tc_hat = tc_hat, te_hat = te_hat, 
                   TS = TS, TR = TR, diag = diag) # store the results from the simulation in a list  
+  
+  # Per-cycle logging (after all individuals for each cycle)
+  if (!is.null(output_json)) {
+    for (cycle in 1:(n.t + 1)) {
+      # State distribution
+      state_counts <- as.list(table(factor(m.M[, cycle], levels = v.n)))
+      names(state_counts) <- v.n
+      # Costs and QALYs up to this cycle
+      costs <- rowSums(m.C[, 1:cycle, drop = FALSE])
+      qalys <- rowSums(m.E[, 1:cycle, drop = FALSE])
+      # Statistics
+      cost_avg <- mean(costs)
+      cost_sd <- sd(costs)
+      qaly_avg <- mean(qalys)
+      qaly_sd <- sd(qalys)
+      # ICER: not meaningful for a single arm, so set to NA here
+      icer_avg <- NA
+      icer_sd <- NA
+      # Prepare JSON object
+      cycle_result <- list(
+        state_counts = state_counts,
+        cost = list(avg = cost_avg, std = cost_sd),
+        qaly = list(avg = qaly_avg, std = qaly_sd),
+        icer = list(avg = icer_avg, std = icer_sd)
+      )
+      # Append to file as JSON line
+      json_line <- jsonlite::toJSON(cycle_result, auto_unbox = TRUE)
+      write(json_line, file = output_json, append = TRUE)
+    }
+  }
+  
   return(results)  # return the results
 }  # end of the MicroSim function  
 
@@ -957,7 +985,7 @@ initialize_model_parameters <- function(force = TRUE) {
   assign("p.H2D", 0.0463, envir = .GlobalEnv)             # short-term mortality rate after surgery
   assign("p.H2P", 0.0082, envir = .GlobalEnv)             # probability of clinical failure after ESD
   assign("p.H2S2", 1 - 0.0463 - 0.0082, envir = .GlobalEnv)  # probability of staying in surveillance after surgery
- 
+  
   # S1 state transition probabilities
   assign("p.S1H2", c(0, 0.03, 0.03, 0.0249, 0.0249, 0.0249, 0.0249, 0.02), envir = .GlobalEnv)  
   assign("p.S1P", rep(0, 8), envir = .GlobalEnv)     
@@ -1003,4 +1031,131 @@ initialize_model_parameters <- function(force = TRUE) {
   cat("Utility (u.*) variables:", length(ls(pattern = "^u\\.", envir = .GlobalEnv)), "\n")
 
   return(TRUE)
+}
+
+log_simulation_cycle_results <- function(sim_results, n.i, v.n, output_json) {
+  # sim_results: list of simulation results, can be single run or multiple replications
+  # n.i: number of individuals
+  # v.n: vector of state names
+  # output_json: file to append JSON lines to
+  
+  # Remove file if it exists to start fresh
+  if (file.exists(output_json)) file.remove(output_json)
+  
+  # Create a container for all replications
+  all_replications <- list()
+  
+  # Check if we have a list of replications or a single run
+  is_multiple_replications <- !is.null(names(sim_results)) && "all_results" %in% names(sim_results)
+  
+  if (is_multiple_replications) {
+    replications <- sim_results$all_results
+    n_reps <- length(replications)
+  } else {
+    # Single run case - treat as one replication
+    replications <- list(sim_results)
+    n_reps <- 1
+  }
+  
+  # Process each replication
+  for (rep_idx in 1:n_reps) {
+    current_rep <- replications[[rep_idx]]
+    
+    # Get matrices from current replication for both ESD and Surgery
+    m.M_esd <- current_rep$esd$m.M
+    m.C_esd <- current_rep$esd$m.C
+    m.E_esd <- current_rep$esd$m.E
+    
+    m.M_surgery <- current_rep$surgery$m.M
+    m.C_surgery <- current_rep$surgery$m.C
+    m.E_surgery <- current_rep$surgery$m.E
+    
+    n.t <- ncol(m.M_esd) - 1
+    rep_cycles <- list()
+    
+    # Process each cycle
+    for (cycle in 1:(n.t + 1)) {
+      cycle_data <- list()
+      
+      # First, process ESD data
+      # State distribution for ESD
+      esd_state_counts <- as.list(table(factor(m.M_esd[, cycle], levels = v.n)))
+      names(esd_state_counts) <- v.n
+      
+      # Costs and QALYs up to this cycle for ESD
+      esd_costs <- rowSums(m.C_esd[, 1:cycle, drop = FALSE])
+      esd_qalys <- rowSums(m.E_esd[, 1:cycle, drop = FALSE])
+      
+      # Surveillance costs for ESD (sum costs for patients in S1 and S2 states)
+      esd_surv_costs <- numeric(n.i)
+      for (i in 1:n.i) {
+        # Sum costs only for cycles where patient was in S1 or S2
+        surv_cycles_esd <- which(m.M_esd[i, 1:cycle] %in% c("S1", "S2"))
+        if (length(surv_cycles_esd) > 0) {
+          esd_surv_costs[i] <- sum(m.C_esd[i, surv_cycles_esd])
+        }
+      }
+      
+      # Statistics for ESD
+      esd_data <- list(
+        state_counts = esd_state_counts,
+        cost = list(
+          total = list(avg = mean(esd_costs), std = sd(esd_costs)),
+          surveillance = list(avg = mean(esd_surv_costs), std = sd(esd_surv_costs))
+        ),
+        qaly = list(avg = mean(esd_qalys), std = sd(esd_qalys))
+      )
+      
+      # Second, process Surgery data
+      # State distribution for Surgery
+      surgery_state_counts <- as.list(table(factor(m.M_surgery[, cycle], levels = v.n)))
+      names(surgery_state_counts) <- v.n
+      
+      # Costs and QALYs up to this cycle for Surgery
+      surgery_costs <- rowSums(m.C_surgery[, 1:cycle, drop = FALSE])
+      surgery_qalys <- rowSums(m.E_surgery[, 1:cycle, drop = FALSE])
+      
+      # Surveillance costs for Surgery (sum costs for patients in S1 and S2 states)
+      surgery_surv_costs <- numeric(n.i)
+      for (i in 1:n.i) {
+        # Sum costs only for cycles where patient was in S1 or S2
+        surv_cycles_surgery <- which(m.M_surgery[i, 1:cycle] %in% c("S1", "S2"))
+        if (length(surv_cycles_surgery) > 0) {
+          surgery_surv_costs[i] <- sum(m.C_surgery[i, surv_cycles_surgery])
+        }
+      }
+      
+      # Statistics for Surgery
+      surgery_data <- list(
+        state_counts = surgery_state_counts,
+        cost = list(
+          total = list(avg = mean(surgery_costs), std = sd(surgery_costs)),
+          surveillance = list(avg = mean(surgery_surv_costs), std = sd(surgery_surv_costs))
+        ),
+        qaly = list(avg = mean(surgery_qalys), std = sd(surgery_qalys))
+      )
+      
+      # Calculate ICER at this cycle
+      delta_cost <- mean(surgery_costs) - mean(esd_costs)
+      delta_qaly <- mean(surgery_qalys) - mean(esd_qalys)
+      icer <- ifelse(delta_qaly != 0, delta_cost / delta_qaly, NA)
+      
+      # Add both ESD and Surgery data to cycle data
+      cycle_data <- list(
+        esd = esd_data,
+        surgery = surgery_data,
+        icer = list(avg = icer, std = NA)
+      )
+      
+      # Add cycle data to rep_cycles
+      rep_cycles[[as.character(cycle)]] <- cycle_data
+    }
+    
+    # Add this replication to the results
+    all_replications[[as.character(rep_idx)]] <- rep_cycles
+  }
+  
+  # Write the entire result to one JSON file
+  json_result <- jsonlite::toJSON(all_replications, auto_unbox = TRUE, pretty = TRUE)
+  write(json_result, file = output_json)
 }

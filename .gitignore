@@ -1,0 +1,6 @@
+# Git should ignore the results directory which contains simulation outputs
+results/
+
+# This is better than ./results because:
+# 1. Using ./ is unnecessary in .gitignore
+# 2. Adding the trailing slash makes it clear we're ignoring a directory
