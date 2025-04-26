@@ -602,206 +602,86 @@ server <- function(input, output, session) {
     append_to_progress(paste("Seed:", seed))
     append_to_progress("--------------------------------------")
     
-    # Create a proxy output sink that will send messages to our log
-    outputLog <- function(message) {
-      isolate({
-        current <- progress_logs()
-        progress_logs(paste0(current, message, "\n"))
-      })
-      invisible(NULL)
-    }
+    # Run the simulation directly
+    sim_result <- run_multiple_simulations(
+      n_reps = n_reps,
+      sensitivity = sensitivity,
+      time_limit_seconds = time_limit,
+      n.i = n.i,
+      n.t = n.t,
+      verbose = verbose,
+      seed = seed
+    )
     
-    # Create a function to update results incrementally
-    updateIncrementalResults <- function(sim_index, sim_result) {
-      if (!is.null(sim_result)) {
-        msg <- sprintf("Simulation %d completed in %.2f seconds (ESD Cost: %.0f Surgery Cost: %.0f ESD QALYs: %.3f Surgery QALYs: %.3f ICER: %.0f )",
-                      sim_index, 
-                      sim_result$time_taken,
-                      sim_result$esd$tc_hat,
-                      sim_result$surgery$tc_hat,
-                      sim_result$esd$te_hat,
-                      sim_result$surgery$te_hat,
-                      ifelse(is.finite(sim_result$icer), sim_result$icer, NA))
-        
-        # Add to progress log
-        append_to_progress(msg)
-        
-        # Update the incremental results
-        isolate({
-          current <- results_summary()
-          # If this is first simulation, start with a header
-          if (current == "") {
-            current <- paste0(
-              result_prefix, " Simulation Incremental Results:\n",
-              "--------------------------------\n"
-            )
-          }
-          results_summary(paste0(current, "Sim ", sim_index, ": ESD Cost: ", round(sim_result$esd$tc_hat), 
-                               ", Surgery Cost: ", round(sim_result$surgery$tc_hat),
-                               ", ICER: ", round(sim_result$icer), "\n"))
-        })
-      }
-    }
+    # After simulation completes, update progress
+    append_to_progress("--------------------------------------")
+    append_to_progress(paste("Completed", sim_result$completed_sims, "of", n_reps, "simulations!"))
     
-    # Create a future to run the simulation
-    simulation_future <- future({
-      # Define v.n directly inside the future instead of trying to capture it from parent environment
-      v.n <- c("H1", "H2", "S1", "S2", "P", "D")
+    # Process and save results if we have any valid simulations
+    if (sim_result$completed_sims > 0) {
+      # Prepare json file and save results
+      json_file <- get_timestamped_filename(result_prefix)
       
-      # Capture cat output
-      con <- textConnection("output_capture", "w", local = TRUE)
-      sink(con, append = TRUE)
+      # Fix: Use the correct field name 'results' instead of 'valid_results'
+      log_simulation_cycle_results(
+        list(all_results = sim_result$results), 
+        n.i, 
+        v.n, 
+        json_file
+      )
+      append_to_progress(paste("Results saved to:", json_file))
       
-      # Run the simulation
-      result <- run_multiple_simulations(
-        n_reps = n_reps,
-        sensitivity = sensitivity,
-        time_limit_seconds = time_limit,
-        n.i = n.i, 
-        n.t = n.t, 
-        verbose = verbose, 
-        seed = seed
+      # Generate and display plots
+      generate_and_display_plots(json_file)
+      
+      # Create the final summary text
+      final_summary <- paste0(
+        result_prefix, " Simulation Results:\n",
+        "Completed Simulations: ", sim_result$completed_sims, " of ", n_reps, "\n",
+        "Using seed: ", seed, "\n",
+        "ESD Mean QALYs: ", round(sim_result$summary$mean_esd_qaly, 4), 
+          " (SD: ", round(sim_result$summary$sd_esd_qaly, 4), ")\n",
+        "Surgery Mean QALYs: ", round(sim_result$summary$mean_surgery_qaly, 4), 
+          " (SD: ", round(sim_result$summary$sd_surgery_qaly, 4), ")\n",
+        "ESD Mean Cost: ", round(sim_result$summary$mean_esd_cost, 2), 
+          " (SD: ", round(sim_result$summary$sd_esd_cost, 2), ")\n",
+        "Surgery Mean Cost: ", round(sim_result$summary$mean_surgery_cost, 2), 
+          " (SD: ", round(sim_result$summary$sd_surgery_cost, 2), ")\n",
+        "Delta QALYs: ", round(sim_result$summary$mean_delta_qaly, 4), 
+          " (SD: ", round(sim_result$summary$sd_delta_qaly, 4), ")\n",
+        "Delta Cost: ", round(sim_result$summary$mean_delta_cost, 2), 
+          " (SD: ", round(sim_result$summary$sd_delta_cost, 2), ")\n",
+        "ICER: ", round(sim_result$summary$mean_icer, 2), 
+          " (SD: ", round(sim_result$summary$sd_icer, 2), ")\n"
       )
       
-      # Stop capturing output
-      sink()
-      close(con)
-      
-      # Return both the simulation result and captured output
-      list(result = result, output = output_capture, v.n = v.n)
-    }, seed = TRUE) # Add seed=TRUE to properly handle random numbers in the future
-    
-    # Handle the future when it completes
-    simulation_future %...>% 
-      (function(result_data) {
-        # Process the captured output
-        for (line in result_data$output) {
-          isolate({
-            current <- progress_logs()
-            progress_logs(paste0(current, line, "\n"))
-          })
-        }
-        
-        # Extract the simulation result and captured v.n
-        result <- result_data$result
-        v.n <- result_data$v.n
-        
-        # Log completion
-        isolate({
-          current <- progress_logs()
-          progress_logs(paste0(current, "--------------------------------------\n",
-                              "Completed ", result$completed_sims, " of ", n_reps, " simulations!\n"))
-        })
-        
-        # Prepare json file
-        json_file <- get_timestamped_filename(result_prefix)
-        
-        # Check if we have completed simulations
-        if (result$completed_sims > 0) {
-          # Create compatible structure for the logging function
-          log_results <- list(all_results = list())
-          
-          # Get completed simulations only
-          for (i in 1:min(n_reps, result$completed_sims)) {
-            if (!is.null(result$results[[i]]) && result$results[[i]]$completed) {
-              log_results$all_results[[i]] <- result$results[[i]]
-            }
-          }
-          
-          # Only log if we have valid results
-          if (length(log_results$all_results) > 0) {
-            log_simulation_cycle_results(log_results, n.i, v.n, json_file)
-            isolate({
-              current <- progress_logs()
-              progress_logs(paste0(current, "Results saved to: ", json_file, "\n"))
-            })
-            
-            # Generate and display plots
-            generate_and_display_plots(json_file)
-          }
-        }
-        
-        # Set final summary results
-        if (result$completed_sims > 0 && !is.null(result$summary)) {
-          summary <- result$summary
-          final_summary <- paste0(
-            result_prefix, " Simulation Results:\n",
-            "Completed Simulations: ", result$completed_sims, " of ", n_reps, "\n",
-            "Using seed: ", seed, "\n",
-            "ESD Mean QALYs: ", round(summary$mean_esd_qaly, 4), 
-              " (SD: ", round(summary$sd_esd_qaly, 4), ")\n",
-            "Surgery Mean QALYs: ", round(summary$mean_surgery_qaly, 4), 
-              " (SD: ", round(summary$sd_surgery_qaly, 4), ")\n",
-            "ESD Mean Cost: ", round(summary$mean_esd_cost, 2), 
-              " (SD: ", round(summary$sd_esd_cost, 2), ")\n",
-            "Surgery Mean Cost: ", round(summary$mean_surgery_cost, 2), 
-              " (SD: ", round(summary$sd_surgery_cost, 2), ")\n",
-            "Delta QALYs: ", round(summary$mean_delta_qaly, 4), 
-              " (SD: ", round(summary$sd_delta_qaly, 4), ")\n",
-            "Delta Cost: ", round(summary$mean_delta_cost, 2), 
-              " (SD: ", round(summary$sd_delta_cost, 2), ")\n",
-            "ICER: ", round(summary$mean_icer, 2), 
-              " (SD: ", round(summary$sd_icer, 2), ")\n"
-          )
-          
-          # Add percentiles if available
-          if (!is.null(summary$icer_percentiles)) {
-            final_summary <- paste0(
-              final_summary,
-              "\nICER Percentiles:\n",
-              "  2.5%: ", round(summary$icer_percentiles[1], 2), "\n",
-              "  25%: ", round(summary$icer_percentiles[2], 2), "\n",
-              "  50% (median): ", round(summary$icer_percentiles[3], 2), "\n",
-              "  75%: ", round(summary$icer_percentiles[4], 2), "\n",
-              "  97.5%: ", round(summary$icer_percentiles[5], 2), "\n"
-            )
-          }
-          
-          if (length(log_results$all_results) > 0) {
-            final_summary <- paste0(final_summary, "Cycle log saved to: ", json_file, "\n")
-          }
-          
-          results_summary(final_summary)
-        } else {
-          results_summary(paste0(
-            "No simulations completed successfully. ",
-            if(sensitivity) "Try increasing the time limit." else "", 
-            "\n"
-          ))
-        }
-      }) %...!% 
-      (function(error) {
-        # Handle any errors in the future
-        isolate({
-          current <- progress_logs()
-          progress_logs(paste0(current, "Error: ", as.character(error), "\n"))
-        })
-      }) %...>%
-      (function(...) {
-        # Always re-enable the button when done
-        enable("run_simulation")
-        is_running(FALSE)
-      })
-  })
-  
-  # Configure future to run in a separate R session
-  plan(multisession)
-  
-  # Setup custom message handler
-  session$registerDataObj(
-    name = "log_message",
-    data = {
-      function(message, id = NULL) {
-        isolate({
-          current <- progress_logs()
-          progress_logs(paste0(current, message, "\n"))
-        })
+      # Add percentiles if available
+      if (!is.null(sim_result$summary$icer_percentiles)) {
+        final_summary <- paste0(
+          final_summary,
+          "\nICER Percentiles:\n",
+          "  2.5%: ", round(sim_result$summary$icer_percentiles[1], 2), "\n",
+          "  25%: ", round(sim_result$summary$icer_percentiles[2], 2), "\n",
+          "  50% (median): ", round(sim_result$summary$icer_percentiles[3], 2), "\n",
+          "  75%: ", round(sim_result$summary$icer_percentiles[4], 2), "\n",
+          "  97.5%: ", round(sim_result$summary$icer_percentiles[5], 2), "\n"
+        )
       }
-    },
-    filterFunc = function(message, id = NULL) {
-      return(TRUE)
+      
+      final_summary <- paste0(final_summary, "Cycle log saved to: ", json_file, "\n")
+      results_summary(final_summary)
+    } else {
+      results_summary(paste0(
+        "No simulations completed successfully. ",
+        if(sensitivity) "Try increasing the time limit." else "", 
+        "\n"
+      ))
     }
-  )
+    
+    # Re-enable the run button
+    enable("run_simulation")
+    is_running(FALSE)
+  })
 }
 
 shinyApp(ui = ui, server = server)
