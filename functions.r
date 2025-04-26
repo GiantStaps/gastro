@@ -1070,6 +1070,10 @@ log_simulation_cycle_results <- function(sim_results, n.i, v.n, output_json) {
     m.C_surgery <- current_rep$surgery$m.C
     m.E_surgery <- current_rep$surgery$m.E
     
+    # Divide QALYs by 4 for annualization
+    m.E_esd <- m.E_esd / 4
+    m.E_surgery <- m.E_surgery / 4
+    
     n.t <- ncol(m.M_esd) - 1
     rep_cycles <- list()
     
