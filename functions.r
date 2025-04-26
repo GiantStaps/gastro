@@ -16,6 +16,7 @@ MicroSim <- function(v.M, n.i, n.t, v.n, d.c, d.e, TR.out = TRUE, TS.out = TRUE,
   # TS.out:  should the output include a matrix of transitions between states? (default is TRUE)
   # seed:    starting seed number for random number generator (default is 1)
   # verbose: print detailed simulation progress information (default is TRUE)
+  
   # Makes use of:
   # Probs:   function for the estimation of transition probabilities
   # Costs:   function for the estimation of cost state values
@@ -53,6 +54,7 @@ MicroSim <- function(v.M, n.i, n.t, v.n, d.c, d.e, TR.out = TRUE, TS.out = TRUE,
     s1_substate_tracker <- matrix(0, nrow = n.t+1, ncol = 9)
     s2_substate_tracker <- matrix(0, nrow = n.t+1, ncol = 9)
   }
+  
   for (i in 1:n.i) {
     m.C[i, 1] <- Costs(m.M[i, 1], 0, 0)  # estimate costs per individual for the initial health state 
     m.E[i, 1] <- Effs(m.M[i, 1], 0, 0)  # estimate QALYs per individual for the initial health state
@@ -83,6 +85,7 @@ MicroSim <- function(v.M, n.i, n.t, v.n, d.c, d.e, TR.out = TRUE, TS.out = TRUE,
       from_state <- match(m.M[i, t], v.n)
       to_state <- match(m.M[i, t + 1], v.n)
       m.trans_count[from_state, to_state] <- m.trans_count[from_state, to_state] + 1
+      
       m.C[i, t + 1] <- Costs(m.M[i, t + 1], m.S1_time[i, t + 1], m.S2_time[i, t + 1])   # estimate costs per individual during cycle t + 1
       m.E[i, t + 1] <- Effs(m.M[i, t + 1], m.S1_time[i, t + 1], m.S2_time[i, t + 1])   # estimate QALYs per individual during cycle t + 1
       
@@ -114,8 +117,8 @@ MicroSim <- function(v.M, n.i, n.t, v.n, d.c, d.e, TR.out = TRUE, TS.out = TRUE,
       
     } # close the loop for the time points 
     
-    # Progress indicator
-    if(i/100 == round(i/100,0)) {          
+    # Progress indicator - MODIFIED TO ONLY SHOW IN VERBOSE MODE
+    if(verbose && i/100 == round(i/100,0)) {          
       cat('\r', paste(i/n.i * 100, "% done", sep = " "))
     }
     
@@ -648,12 +651,7 @@ generate_random_p_draws <- function(print_output = FALSE) {
 generate_new_random_probs <- function(restore_originals = FALSE, print_output = FALSE) {
   # Check for p.* variables in global environment
   p_vars <- get_all_p_vars(.GlobalEnv)
-  if(print_output) {
-    cat("Found", length(p_vars), "p.* variables in global environment\n")
-    cat("First few p.* variables found:\n")
-    print(head(names(p_vars), 5))
-  }
-  
+  if(print_output) cat("Found", length(p_vars), "p.* variables in global environment\n")
   if (length(p_vars) == 0) {
     # Always print errors
     cat("ERROR: No p.* variables found in global environment.\n")

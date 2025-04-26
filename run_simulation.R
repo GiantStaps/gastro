@@ -11,12 +11,21 @@ if (!require(jsonlite)) install.packages("jsonlite")
 if (!require(dplyr)) install.packages("dplyr")
 if (!require(tidyr)) install.packages("tidyr")
 if (!require(ggplot2)) install.packages("ggplot2")
+if (!require(future)) install.packages("future")
+if (!require(promises)) install.packages("promises")
+if (!require(shinyjs)) install.packages("shinyjs")
 
 library(shiny)
 library(jsonlite)
 library(dplyr)
 library(tidyr)
 library(ggplot2)
+library(future)
+library(promises)
+library(shinyjs)
+
+# Define health state names (needed for logging and visualizations)
+v.n <- c("H1", "H2", "S1", "S2", "P", "D")
 
 # Process JSON results function (moved from analyze_results.R)
 process_json_results <- function(json_path) {
@@ -163,6 +172,7 @@ get_timestamped_filename <- function(prefix) {
 }
 
 ui <- fluidPage(
+  useShinyjs(),
   titlePanel("Microsimulation Model GUI"),
   sidebarLayout(
     sidebarPanel(
@@ -172,8 +182,8 @@ ui <- fluidPage(
       numericInput("time_limit", "Time Limit per Simulation (seconds):", 30, min = 1),
       numericInput("seed", "Random Seed:", 12345, min = 1),
       checkboxInput("verbose", "Verbose Output", FALSE),
-      actionButton("run_baseline", "Run Baseline Simulation", class = "btn-primary"),
-      actionButton("run_sensitivity", "Run Sensitivity Analysis", class = "btn-info")
+      checkboxInput("sensitivity", "Run With Sensitivity Analysis", FALSE),
+      actionButton("run_simulation", "Run Simulation", class = "btn-primary")
     ),
     mainPanel(
       tabsetPanel(
@@ -273,106 +283,141 @@ ui <- fluidPage(
   )
 )
 
+# Safe function to update reactive values from promises/futures
+safeUpdate <- function(session, reactiveValue, value) {
+  if (!is.null(session) && !is.null(reactiveValue)) {
+    isolate({
+      reactiveValue(value)
+    })
+    session$onFlushed(function() {
+      # This ensures the UI is updated
+    })
+  }
+}
+
 server <- function(input, output, session) {
   # Initialize reactive values for storing simulation progress
   progress_logs <- reactiveVal("")
   results_summary <- reactiveVal("")
   current_plots_data <- reactiveVal(NULL)
+  is_running <- reactiveVal(FALSE)
 
-  # Function to append to progress log
+  # Safe function to append to progress log
   append_to_progress <- function(message) {
-    current <- progress_logs()
-    progress_logs(paste0(current, message, "\n"))
+    # Get the current logs
+    isolate({
+      current <- progress_logs()
+      # Update the reactive value
+      progress_logs(paste0(current, message, "\n"))
+    })
+  }
+
+  # Function to handle output from the model
+  log_message <- function(message) {
+    future::value(
+      future({
+        append_to_progress(message)
+      })
+    )
   }
 
   # Function to generate plots from json file
   generate_and_display_plots <- function(json_file) {
-    # Process the data using functions from analyze_results.R
-    df <- process_json_results(json_file)
-    summary_data <- prepare_summary_data(df)
-    
-    # Store data for download handlers
-    current_plots_data(summary_data)
-    
-    # Update the plots
-    output$state_distribution <- renderPlot({
-      summary_data$time_series %>%
-        group_by(cycle, strategy) %>%
-        mutate(total_count = sum(mean_count, na.rm = TRUE)) %>%
-        ungroup() %>%
-        mutate(proportion = mean_count / total_count) %>%
-        ggplot(aes(x = cycle, y = mean_count, fill = state)) +
-        geom_area(position = "stack") +
-        facet_wrap(~ strategy) +
-        scale_fill_brewer(palette = "Set2") +
-        labs(
-          title = "State Distribution over Time",
-          x = "Cycle",
-          y = "Number of Patients",
-          fill = "Health State"
-        ) +
-        theme_minimal()
+    tryCatch({
+      # Process the data using functions from analyze_results.R
+      df <- process_json_results(json_file)
+      summary_data <- prepare_summary_data(df)
+      
+      # Store data for download handlers
+      current_plots_data(summary_data)
+      
+      # Update the plots
+      output$state_distribution <- renderPlot({
+        req(summary_data$time_series)
+        summary_data$time_series %>%
+          group_by(cycle, strategy) %>%
+          mutate(total_count = sum(mean_count, na.rm = TRUE)) %>%
+          ungroup() %>%
+          mutate(proportion = mean_count / total_count) %>%
+          ggplot(aes(x = cycle, y = mean_count, fill = state)) +
+          geom_area(position = "stack") +
+          facet_wrap(~ strategy) +
+          scale_fill_brewer(palette = "Set2") +
+          labs(
+            title = "State Distribution over Time",
+            x = "Cycle",
+            y = "Number of Patients",
+            fill = "Health State"
+          ) +
+          theme_minimal()
+      })
+      
+      output$costs_plot <- renderPlot({
+        req(summary_data$cost_summary)
+        summary_data$cost_summary %>%
+          ggplot(aes(x = cycle, y = cost, color = strategy, linetype = cost_type)) +
+          geom_line(linewidth = 1) +
+          scale_color_brewer(palette = "Set1") +
+          labs(
+            title = "Mean Costs over Time",
+            x = "Cycle",
+            y = "Cost ($)",
+            color = "Strategy",
+            linetype = "Cost Type"
+          ) +
+          theme_minimal()
+      })
+      
+      output$cost_boxplot <- renderPlot({
+        req(summary_data$endpoint)
+        summary_data$endpoint %>%
+          ggplot(aes(x = strategy, y = total_cost, fill = strategy)) +
+          geom_boxplot() +
+          scale_fill_brewer(palette = "Set1") +
+          labs(
+            title = "Total Costs at Final Cycle",
+            x = "Strategy",
+            y = "Total Cost ($)",
+            fill = "Strategy"
+          ) +
+          theme_minimal()
+      })
+      
+      output$qaly_boxplot <- renderPlot({
+        req(summary_data$endpoint)
+        summary_data$endpoint %>%
+          ggplot(aes(x = strategy, y = qaly, fill = strategy)) +
+          geom_boxplot() +
+          scale_fill_brewer(palette = "Set1") +
+          labs(
+            title = "QALYs at Final Cycle",
+            x = "Strategy",
+            y = "QALYs",
+            fill = "Strategy"
+          ) +
+          theme_minimal()
+      })
+      
+      output$scatter_plot <- renderPlot({
+        req(summary_data$endpoint)
+        summary_data$endpoint %>%
+          ggplot(aes(x = qaly, y = total_cost, color = strategy)) +
+          geom_point(alpha = 0.7) +
+          scale_color_brewer(palette = "Set1") +
+          labs(
+            title = "Cost-Effectiveness Plane",
+            x = "QALYs",
+            y = "Total Cost ($)",
+            color = "Strategy"
+          ) +
+          theme_minimal()
+      })
+      
+      # Switch to the visualizations tab
+      updateTabsetPanel(session, "result_tabs", selected = "Visualizations")
+    }, error = function(e) {
+      append_to_progress(paste("Error generating plots:", e$message))
     })
-    
-    output$costs_plot <- renderPlot({
-      summary_data$cost_summary %>%
-        ggplot(aes(x = cycle, y = cost, color = strategy, linetype = cost_type)) +
-        geom_line(linewidth = 1) +
-        scale_color_brewer(palette = "Set1") +
-        labs(
-          title = "Mean Costs over Time",
-          x = "Cycle",
-          y = "Cost ($)",
-          color = "Strategy",
-          linetype = "Cost Type"
-        ) +
-        theme_minimal()
-    })
-    
-    output$cost_boxplot <- renderPlot({
-      summary_data$endpoint %>%
-        ggplot(aes(x = strategy, y = total_cost, fill = strategy)) +
-        geom_boxplot() +
-        scale_fill_brewer(palette = "Set1") +
-        labs(
-          title = "Total Costs at Final Cycle",
-          x = "Strategy",
-          y = "Total Cost ($)",
-          fill = "Strategy"
-        ) +
-        theme_minimal()
-    })
-    
-    output$qaly_boxplot <- renderPlot({
-      summary_data$endpoint %>%
-        ggplot(aes(x = strategy, y = qaly, fill = strategy)) +
-        geom_boxplot() +
-        scale_fill_brewer(palette = "Set1") +
-        labs(
-          title = "QALYs at Final Cycle",
-          x = "Strategy",
-          y = "QALYs",
-          fill = "Strategy"
-        ) +
-        theme_minimal()
-    })
-    
-    output$scatter_plot <- renderPlot({
-      summary_data$endpoint %>%
-        ggplot(aes(x = qaly, y = total_cost, color = strategy)) +
-        geom_point(alpha = 0.7) +
-        scale_color_brewer(palette = "Set1") +
-        labs(
-          title = "Cost-Effectiveness Plane",
-          x = "QALYs",
-          y = "Total Cost ($)",
-          color = "Strategy"
-        ) +
-        theme_minimal()
-    })
-    
-    # Switch to the visualizations tab
-    updateTabsetPanel(session, "result_tabs", selected = "Visualizations")
   }
   
   # Connect the output objects to the reactive values
@@ -511,16 +556,27 @@ server <- function(input, output, session) {
     }
   )
 
-  # Simulate baseline model
-  observeEvent(input$run_baseline, {
-    # Reset progress log
+  # Custom print function that redirects to our log
+  # This function will be called within the simulation process
+  custom_cat <- function(...) {
+    message <- paste0(...)
+    session$sendCustomMessage(type = "log_message", message = message)
+  }
+  
+  # Create a message handler to receive log messages
+  observeEvent(input$log_message, {
+    append_to_progress(input$log_message)
+  })
+
+  # Run simulation button handler
+  observeEvent(input$run_simulation, {
+    # Disable the button while running
+    disable("run_simulation")
+    is_running(TRUE)
+    
+    # Reset progress log and results summary
     progress_logs("")
-    append_to_progress("Starting baseline simulation...")
-    append_to_progress(paste("Replications:", input$n_reps))
-    append_to_progress(paste("Individuals:", input$n_individuals))
-    append_to_progress(paste("Cycles:", input$n_cycles))
-    append_to_progress(paste("Seed:", input$seed))
-    append_to_progress("--------------------------------------")
+    results_summary("")
     
     # Setup parameters
     n_reps <- input$n_reps
@@ -528,177 +584,224 @@ server <- function(input, output, session) {
     n.t <- input$n_cycles
     verbose <- input$verbose
     seed <- input$seed
+    sensitivity <- input$sensitivity
+    time_limit <- if(sensitivity) input$time_limit else NULL
     
-    # Create progress tracker that updates UI
-    progress_tracker <- function(i, completed = FALSE) {
-      if (completed) {
-        append_to_progress(paste("Simulation", i, "of", n_reps, "completed."))
-      } else {
-        append_to_progress(paste("Running simulation", i, "of", n_reps, "..."))
+    # Create prefix for results file
+    result_prefix <- if(sensitivity) "Sensitivity" else "Baseline"
+    
+    # Log simulation details
+    append_to_progress(paste("Starting", result_prefix, "simulation..."))
+    append_to_progress(paste("Replications:", n_reps))
+    append_to_progress(paste("Individuals:", n.i))
+    append_to_progress(paste("Cycles:", n.t))
+    append_to_progress(paste("Sensitivity:", sensitivity))
+    if (sensitivity) {
+      append_to_progress(paste("Time limit per simulation:", time_limit, "seconds"))
+    }
+    append_to_progress(paste("Seed:", seed))
+    append_to_progress("--------------------------------------")
+    
+    # Create a proxy output sink that will send messages to our log
+    outputLog <- function(message) {
+      isolate({
+        current <- progress_logs()
+        progress_logs(paste0(current, message, "\n"))
+      })
+      invisible(NULL)
+    }
+    
+    # Create a function to update results incrementally
+    updateIncrementalResults <- function(sim_index, sim_result) {
+      if (!is.null(sim_result)) {
+        msg <- sprintf("Simulation %d completed in %.2f seconds (ESD Cost: %.0f Surgery Cost: %.0f ESD QALYs: %.3f Surgery QALYs: %.3f ICER: %.0f )",
+                      sim_index, 
+                      sim_result$time_taken,
+                      sim_result$esd$tc_hat,
+                      sim_result$surgery$tc_hat,
+                      sim_result$esd$te_hat,
+                      sim_result$surgery$te_hat,
+                      ifelse(is.finite(sim_result$icer), sim_result$icer, NA))
+        
+        # Add to progress log
+        append_to_progress(msg)
+        
+        # Update the incremental results
+        isolate({
+          current <- results_summary()
+          # If this is first simulation, start with a header
+          if (current == "") {
+            current <- paste0(
+              result_prefix, " Simulation Incremental Results:\n",
+              "--------------------------------\n"
+            )
+          }
+          results_summary(paste0(current, "Sim ", sim_index, ": ESD Cost: ", round(sim_result$esd$tc_hat), 
+                               ", Surgery Cost: ", round(sim_result$surgery$tc_hat),
+                               ", ICER: ", round(sim_result$icer), "\n"))
+        })
       }
     }
     
-    # Run the simulation with progress tracking
-    withProgress(message = "Running baseline simulation", {
-      for (i in 1:n_reps) {
-        incProgress(1/n_reps, detail = paste("Simulation", i, "of", n_reps))
-        progress_tracker(i)
-      }
+    # Create a future to run the simulation
+    simulation_future <- future({
+      # Define v.n directly inside the future instead of trying to capture it from parent environment
+      v.n <- c("H1", "H2", "S1", "S2", "P", "D")
       
-      # Actually run the simulation
-      result <- run_baseline_simulation(
+      # Capture cat output
+      con <- textConnection("output_capture", "w", local = TRUE)
+      sink(con, append = TRUE)
+      
+      # Run the simulation
+      result <- run_multiple_simulations(
+        n_reps = n_reps,
+        sensitivity = sensitivity,
+        time_limit_seconds = time_limit,
         n.i = n.i, 
         n.t = n.t, 
         verbose = verbose, 
-        n_reps = n_reps,
         seed = seed
       )
       
-      # Log completion
-      append_to_progress("--------------------------------------")
-      append_to_progress("Simulation completed!")
+      # Stop capturing output
+      sink()
+      close(con)
       
-      # Logging for simulation results
-      json_file <- get_timestamped_filename("Baseline")
-      log_simulation_cycle_results(result, n.i, v.n, json_file)
-      append_to_progress(paste("Results saved to:", json_file))
-      
-      # Set final summary results
-      if (n_reps == 1) {
-        final_summary <- paste0(
-          "Baseline Simulation Results (Single Run):\n",
-          "Using seed: ", seed, "\n",
-          "ESD Mean QALYs: ", round(mean(result$esd$te), 4), "\n",
-          "Surgery Mean QALYs: ", round(mean(result$surgery$te), 4), "\n",
-          "ESD Mean Cost: ", round(mean(result$esd$tc), 2), "\n",
-          "Surgery Mean Cost: ", round(mean(result$surgery$tc), 2), "\n",
-          "Delta QALYs: ", round(result$delta_e, 4), "\n",
-          "Delta Cost: ", round(result$delta_c, 2), "\n",
-          "ICER: ", round(result$icer, 2), "\n",
-          "Cycle log saved to: ", json_file, "\n"
-        )
-      } else {
-        final_summary <- paste0(
-          "Baseline Simulation Replications: ", result$n_reps, "\n",
-          "Using seed: ", seed, "\n",
-          "ESD Mean QALYs: ", round(result$esd_qalys_mean, 4), " (SD: ", round(result$esd_qalys_sd, 4), ")\n",
-          "Surgery Mean QALYs: ", round(result$surgery_qalys_mean, 4), " (SD: ", round(result$surgery_qalys_sd, 4), ")\n",
-          "ESD Mean Cost: ", round(result$esd_costs_mean, 2), " (SD: ", round(result$esd_costs_sd, 2), ")\n",
-          "Surgery Mean Cost: ", round(result$surgery_costs_mean, 2), " (SD: ", round(result$surgery_costs_sd, 2), ")\n",
-          "Delta QALYs: ", round(result$delta_qalys_mean, 4), " (SD: ", round(result$delta_qalys_sd, 4), ")\n",
-          "Delta Cost: ", round(result$delta_costs_mean, 2), " (SD: ", round(result$delta_costs_sd, 2), ")\n",
-          "ICER: ", round(result$icer_mean, 2), " (SD: ", round(result$icer_sd, 2), ")\n",
-          "Cycle log saved to: ", json_file, "\n"
-        )
-      }
-      results_summary(final_summary)
-      
-      # Generate and display plots for the baseline simulation
-      generate_and_display_plots(json_file)
-    })
-  })
-
-  # Run sensitivity analysis
-  observeEvent(input$run_sensitivity, {
-    # Reset progress log
-    progress_logs("")
-    append_to_progress("Starting sensitivity analysis...")
-    append_to_progress(paste("Replications:", input$n_reps))
-    append_to_progress(paste("Individuals:", input$n_individuals))
-    append_to_progress(paste("Cycles:", input$n_cycles))
-    append_to_progress(paste("Time limit per simulation:", input$time_limit, "seconds"))
-    append_to_progress(paste("Seed:", input$seed))
-    append_to_progress("--------------------------------------")
+      # Return both the simulation result and captured output
+      list(result = result, output = output_capture, v.n = v.n)
+    }, seed = TRUE) # Add seed=TRUE to properly handle random numbers in the future
     
-    # Setup parameters
-    seed <- input$seed
-    n_reps <- input$n_reps
-    time_limit <- input$time_limit
-    
-    # Create a sensitivity analysis with progress tracking
-    withProgress(message = "Running sensitivity analysis", {
-      # Run the sensitivity analysis with progress updates
-      result <- sensitivity_analysis(
-        n_reps = n_reps,
-        time_limit_seconds = time_limit,
-        n.i = input$n_individuals,
-        n.t = input$n_cycles,
-        verbose = input$verbose,
-        seed = seed
-      )
-      
-      # Every few seconds, check progress
-      for (i in 1:n_reps) {
-        incProgress(1/n_reps, detail = paste("Simulation", i, "of", n_reps))
-        if (i %% 5 == 0 || i == n_reps) {
-          append_to_progress(paste("Completed", i, "of", n_reps, "simulations..."))
+    # Handle the future when it completes
+    simulation_future %...>% 
+      (function(result_data) {
+        # Process the captured output
+        for (line in result_data$output) {
+          isolate({
+            current <- progress_logs()
+            progress_logs(paste0(current, line, "\n"))
+          })
         }
-        Sys.sleep(0.1)  # Small delay to allow UI updates
-      }
-      
-      # Log completion
-      append_to_progress("--------------------------------------")
-      append_to_progress(paste("Sensitivity analysis completed with", result$completed_sims, "of", n_reps, "simulations!"))
-      
-      # Logging for sensitivity analysis results - handle different structure
-      json_file <- get_timestamped_filename("Sensitivity")
-      
-      # Check if we have completed simulations to process
-      if (result$completed_sims > 0) {
-        # For sensitivity analysis, results are stored differently
-        # Create compatible structure for the logging function
-        sensitivity_results <- list(all_results = list())
         
-        # Get completed simulations only
-        for (i in 1:min(n_reps, result$completed_sims)) {
-          if (!is.null(result$results[[i]]) && result$results[[i]]$completed) {
-            sensitivity_results$all_results[[i]] <- result$results[[i]]
+        # Extract the simulation result and captured v.n
+        result <- result_data$result
+        v.n <- result_data$v.n
+        
+        # Log completion
+        isolate({
+          current <- progress_logs()
+          progress_logs(paste0(current, "--------------------------------------\n",
+                              "Completed ", result$completed_sims, " of ", n_reps, " simulations!\n"))
+        })
+        
+        # Prepare json file
+        json_file <- get_timestamped_filename(result_prefix)
+        
+        # Check if we have completed simulations
+        if (result$completed_sims > 0) {
+          # Create compatible structure for the logging function
+          log_results <- list(all_results = list())
+          
+          # Get completed simulations only
+          for (i in 1:min(n_reps, result$completed_sims)) {
+            if (!is.null(result$results[[i]]) && result$results[[i]]$completed) {
+              log_results$all_results[[i]] <- result$results[[i]]
+            }
+          }
+          
+          # Only log if we have valid results
+          if (length(log_results$all_results) > 0) {
+            log_simulation_cycle_results(log_results, n.i, v.n, json_file)
+            isolate({
+              current <- progress_logs()
+              progress_logs(paste0(current, "Results saved to: ", json_file, "\n"))
+            })
+            
+            # Generate and display plots
+            generate_and_display_plots(json_file)
           }
         }
         
-        # Only log if we have valid results
-        if (length(sensitivity_results$all_results) > 0) {
-          log_simulation_cycle_results(sensitivity_results, input$n_individuals, v.n, json_file)
-          append_to_progress(paste("Results saved to:", json_file))
+        # Set final summary results
+        if (result$completed_sims > 0 && !is.null(result$summary)) {
+          summary <- result$summary
+          final_summary <- paste0(
+            result_prefix, " Simulation Results:\n",
+            "Completed Simulations: ", result$completed_sims, " of ", n_reps, "\n",
+            "Using seed: ", seed, "\n",
+            "ESD Mean QALYs: ", round(summary$mean_esd_qaly, 4), 
+              " (SD: ", round(summary$sd_esd_qaly, 4), ")\n",
+            "Surgery Mean QALYs: ", round(summary$mean_surgery_qaly, 4), 
+              " (SD: ", round(summary$sd_surgery_qaly, 4), ")\n",
+            "ESD Mean Cost: ", round(summary$mean_esd_cost, 2), 
+              " (SD: ", round(summary$sd_esd_cost, 2), ")\n",
+            "Surgery Mean Cost: ", round(summary$mean_surgery_cost, 2), 
+              " (SD: ", round(summary$sd_surgery_cost, 2), ")\n",
+            "Delta QALYs: ", round(summary$mean_delta_qaly, 4), 
+              " (SD: ", round(summary$sd_delta_qaly, 4), ")\n",
+            "Delta Cost: ", round(summary$mean_delta_cost, 2), 
+              " (SD: ", round(summary$sd_delta_cost, 2), ")\n",
+            "ICER: ", round(summary$mean_icer, 2), 
+              " (SD: ", round(summary$sd_icer, 2), ")\n"
+          )
           
-          # Generate and display plots for the sensitivity analysis
-          generate_and_display_plots(json_file)
-        }
-      }
-      
-      # Set final summary results
-      final_summary <- paste0(
-        "Sensitivity Analysis Results:\n",
-        "Using seed: ", seed, "\n",
-        "Completed Simulations: ", result$completed_sims, "\n"
-      )
-      
-      if (result$completed_sims > 0) {
-        final_summary <- paste0(
-          final_summary,
-          "Mean ICER: ", round(result$mean_icer, 2), "\n",
-          "Mean Incremental Cost: ", round(result$mean_delta_cost, 2), "\n",
-          "Mean Incremental QALYs: ", round(result$mean_delta_qaly, 4), "\n",
-          "ICER Percentiles:\n",
-          "  2.5%: ", round(result$icer_percentiles[1], 2), "\n",
-          "  25%: ", round(result$icer_percentiles[2], 2), "\n",
-          "  50% (median): ", round(result$icer_percentiles[3], 2), "\n",
-          "  75%: ", round(result$icer_percentiles[4], 2), "\n",
-          "  97.5%: ", round(result$icer_percentiles[5], 2), "\n"
-        )
-        
-        if (length(sensitivity_results$all_results) > 0) {
-          final_summary <- paste0(final_summary, "Cycle log saved to: ", json_file, "\n")
+          # Add percentiles if available
+          if (!is.null(summary$icer_percentiles)) {
+            final_summary <- paste0(
+              final_summary,
+              "\nICER Percentiles:\n",
+              "  2.5%: ", round(summary$icer_percentiles[1], 2), "\n",
+              "  25%: ", round(summary$icer_percentiles[2], 2), "\n",
+              "  50% (median): ", round(summary$icer_percentiles[3], 2), "\n",
+              "  75%: ", round(summary$icer_percentiles[4], 2), "\n",
+              "  97.5%: ", round(summary$icer_percentiles[5], 2), "\n"
+            )
+          }
+          
+          if (length(log_results$all_results) > 0) {
+            final_summary <- paste0(final_summary, "Cycle log saved to: ", json_file, "\n")
+          }
+          
+          results_summary(final_summary)
         } else {
-          final_summary <- paste0(final_summary, "No complete results available for cycle logging\n")
+          results_summary(paste0(
+            "No simulations completed successfully. ",
+            if(sensitivity) "Try increasing the time limit." else "", 
+            "\n"
+          ))
         }
-      } else {
-        final_summary <- paste0(final_summary, "No simulations completed successfully. Try increasing the time limit.\n")
-      }
-      
-      results_summary(final_summary)
-    })
+      }) %...!% 
+      (function(error) {
+        # Handle any errors in the future
+        isolate({
+          current <- progress_logs()
+          progress_logs(paste0(current, "Error: ", as.character(error), "\n"))
+        })
+      }) %...>%
+      (function(...) {
+        # Always re-enable the button when done
+        enable("run_simulation")
+        is_running(FALSE)
+      })
   })
+  
+  # Configure future to run in a separate R session
+  plan(multisession)
+  
+  # Setup custom message handler
+  session$registerDataObj(
+    name = "log_message",
+    data = {
+      function(message, id = NULL) {
+        isolate({
+          current <- progress_logs()
+          progress_logs(paste0(current, message, "\n"))
+        })
+      }
+    },
+    filterFunc = function(message, id = NULL) {
+      return(TRUE)
+    }
+  )
 }
 
 shinyApp(ui = ui, server = server)

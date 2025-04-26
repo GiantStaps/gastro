@@ -28,21 +28,24 @@ source("./functions.r")  # lowercase 'r' to match actual filename
 source("./BetaParmsFromQuantiles.R")
 source("./GammaParmsFromQuantiles.R")
 
-##################################### Function to run a timed simulation ###################
-run_timed_simulation <- function(time_limit_seconds = 60, n.i = 1000, n.t = 20, verbose = FALSE, sim_index = 1) {
-  # Start timing
+##################################### Unified simulation function ##########################
+run_simulation <- function(n.i = 1000, n.t = 20, sensitivity = FALSE, time_limit_seconds = NULL, 
+                           verbose = FALSE, sim_index = 1) {
+  # Start timing if time limit is specified
   start_time <- Sys.time()
   
-  # Initialize model parameters 
+  # Initialize model parameters
   initialize_model_parameters(force = TRUE)
   
-  # Use simulation index to create a unique seed for each simulation
+  # Set seed for reproducibility
   set.seed(12345 + sim_index)
   
-  # Generate random values for probabilities, costs, and utilities
-  generate_new_random_probs(print_output = FALSE)
-  generate_new_random_c_values(print_output = FALSE)
-  generate_new_random_u_values(print_output = FALSE)
+  # If running sensitivity analysis, generate random values for probabilities, costs, and utilities
+  if (sensitivity) {
+    generate_new_random_probs(print_output = FALSE)
+    generate_new_random_c_values(print_output = FALSE)
+    generate_new_random_u_values(print_output = FALSE)
+  }
 
   # Define the initial state vectors
   v.M_1 <- rep("H1", n.i)  # all start in the H1 (ESD) state
@@ -54,12 +57,13 @@ run_timed_simulation <- function(time_limit_seconds = 60, n.i = 1000, n.t = 20, 
   # Discount rates (annualized)
   d.c <- d.e <- 0.03 / 4  # discount rate for costs and QALYs per quarter
   
-  # Run ESD and Surgery simulations
+  # Run ESD simulation
   if (verbose) cat("Running ESD simulation:\n")
   sim_esd <- MicroSim(v.M_1, n.i, n.t, v.n, d.c, d.e, verbose = verbose, seed = (12345 + sim_index*2))
   
-  # Check if we've exceeded the time limit
-  if (difftime(Sys.time(), start_time, units = "secs") > time_limit_seconds) {
+  # Check if we've exceeded the time limit (if specified)
+  if (!is.null(time_limit_seconds) && 
+      difftime(Sys.time(), start_time, units = "secs") > time_limit_seconds) {
     if (verbose) cat("Time limit reached, returning partial results\n")
     # Divide QALYs by 4 for annualization
     sim_esd$te <- sim_esd$te / 4
@@ -71,6 +75,7 @@ run_timed_simulation <- function(time_limit_seconds = 60, n.i = 1000, n.t = 20, 
     ))
   }
   
+  # Run Surgery simulation
   if (verbose) cat("Running Surgery simulation:\n")
   sim_surgery <- MicroSim(v.M_2, n.i, n.t, v.n, d.c, d.e, verbose = verbose, seed = (12345 + sim_index*2 + 1))
   
@@ -96,13 +101,18 @@ run_timed_simulation <- function(time_limit_seconds = 60, n.i = 1000, n.t = 20, 
 }
 
 ##################################### Run multiple simulations ##############################
-sensitivity_analysis <- function(n_reps = 1000, time_limit_seconds = 60, n.i = 1000, n.t = 20, verbose = FALSE, seed = 12345) {
+run_multiple_simulations <- function(n_reps = 100, sensitivity = FALSE, time_limit_seconds = NULL, 
+                                   n.i = 1000, n.t = 20, verbose = FALSE, seed = 12345) {
   # Prepare storage for results
   results <- list()
   completed_sims <- 0
   total_start_time <- Sys.time()
   
-  cat("Starting", n_reps, "simulations with time limit of", time_limit_seconds, "seconds each\n")
+  # Print simulation parameters
+  simulation_type <- if(sensitivity) "sensitivity analysis" else "baseline"
+  time_limit_msg <- if(!is.null(time_limit_seconds)) paste("with time limit of", time_limit_seconds, "seconds each") else "with no time limit"
+  
+  cat("Starting", n_reps, simulation_type, "simulations", time_limit_msg, "\n")
   cat("Total individuals per simulation:", n.i, "\n")
   cat("Total cycles per simulation:", n.t, "\n\n")
   
@@ -112,17 +122,20 @@ sensitivity_analysis <- function(n_reps = 1000, time_limit_seconds = 60, n.i = 1
     dir.create(results_dir)
   }
   
-  # Initialize results file with headers
-  results_file <- file.path(results_dir, "simulation_results_live.csv")
-  write("simulation,esd_qalys,surgery_qalys,esd_cost,surgery_cost,delta_qalys,delta_cost,icer", 
-        file = results_file)
-  
+  # Run simulations
   for (i in 1:n_reps) {
     cat("Starting simulation", i, "of", n_reps, "\n")
     sim_start_time <- Sys.time()
     
-    # Run a single timed simulation with consistent seeding
-    sim_result <- run_timed_simulation(time_limit_seconds, n.i, n.t, verbose, sim_index = seed + i - 1)
+    # Run a single simulation with appropriate parameters
+    sim_result <- run_simulation(
+      n.i = n.i, 
+      n.t = n.t, 
+      sensitivity = sensitivity,
+      time_limit_seconds = time_limit_seconds, 
+      verbose = verbose, 
+      sim_index = seed + i - 1
+    )
     
     # Store results
     results[[i]] <- sim_result
@@ -149,12 +162,15 @@ sensitivity_analysis <- function(n_reps = 1000, time_limit_seconds = 60, n.i = 1
           "ESD QALYs:", round(esd_qalys, 3), 
           "Surgery QALYs:", round(surgery_qalys, 3), 
           "ICER:", round(sim_result$icer, 0), ")\n")
+          
+      # Add time taken to the result for UI display
+      sim_result$time_taken <- as.numeric(sim_runtime)
       
-      # Write results to file line by line immediately after each simulation
-      result_line <- paste(i, esd_qalys, surgery_qalys, esd_cost, surgery_cost, 
-                          sim_result$delta_e, sim_result$delta_c, sim_result$icer, 
-                          sep = ",")
-      write(result_line, file = results_file, append = TRUE)
+      # Call the updateIncrementalResults function if it exists in parent frame
+      if (exists("updateIncrementalResults", envir = parent.frame())) {
+        updateIncrementalResults_fn <- get("updateIncrementalResults", envir = parent.frame())
+        updateIncrementalResults_fn(i, sim_result)
+      }
     } else {
       cat(" (incomplete - time limit reached)\n")
     }
@@ -164,91 +180,86 @@ sensitivity_analysis <- function(n_reps = 1000, time_limit_seconds = 60, n.i = 1
   cat("\nAll simulations completed in", round(total_runtime, 2), "seconds\n")
   cat("Completed simulations:", completed_sims, "out of", n_reps, "\n\n")
   
-  # Compile summary statistics
-  icers <- sapply(results[1:completed_sims], function(x) if(x$completed) x$icer else NA)
-  delta_costs <- sapply(results[1:completed_sims], function(x) if(x$completed) x$delta_c else NA)
-  delta_qalys <- sapply(results[1:completed_sims], function(x) if(x$completed) x$delta_e else NA)
+  # Compile summary statistics for completed simulations
+  if (completed_sims > 0) {
+    # Filter out incomplete simulations
+    completed_results <- Filter(function(x) x$completed, results)
+    
+    # Extract metrics
+    icers <- sapply(completed_results, function(x) x$icer)
+    delta_costs <- sapply(completed_results, function(x) x$delta_c)
+    delta_qalys <- sapply(completed_results, function(x) x$delta_e)
+    esd_costs <- sapply(completed_results, function(x) mean(x$esd$tc))
+    surgery_costs <- sapply(completed_results, function(x) mean(x$surgery$tc))
+    esd_qalys <- sapply(completed_results, function(x) mean(x$esd$te))
+    surgery_qalys <- sapply(completed_results, function(x) mean(x$surgery$te))
+    
+    # Print summary statistics
+    cat("Summary of completed simulations:\n")
+    cat("Mean ICER:", round(mean(icers), 2), "(SD:", round(sd(icers), 2), ")\n")
+    cat("Mean Incremental Cost:", round(mean(delta_costs), 2), "(SD:", round(sd(delta_costs), 2), ")\n")
+    cat("Mean Incremental QALYs:", round(mean(delta_qalys), 4), "(SD:", round(sd(delta_qalys), 4), ")\n")
+    cat("Mean ESD Cost:", round(mean(esd_costs), 2), "(SD:", round(sd(esd_costs), 2), ")\n")
+    cat("Mean Surgery Cost:", round(mean(surgery_costs), 2), "(SD:", round(sd(surgery_costs), 2), ")\n")
+    cat("Mean ESD QALYs:", round(mean(esd_qalys), 4), "(SD:", round(sd(esd_qalys), 4), ")\n")
+    cat("Mean Surgery QALYs:", round(mean(surgery_qalys), 4), "(SD:", round(sd(surgery_qalys), 4), ")\n")
+    
+    # Calculate percentiles for ICER if we have enough simulations
+    if (length(icers) >= 4) {
+      icer_percentiles <- quantile(icers, probs = c(0.025, 0.25, 0.5, 0.75, 0.975))
+      cat("\nICER Percentiles:\n")
+      cat("2.5%:", round(icer_percentiles[1], 2), "\n")
+      cat("25%:", round(icer_percentiles[2], 2), "\n")
+      cat("50% (median):", round(icer_percentiles[3], 2), "\n")
+      cat("75%:", round(icer_percentiles[4], 2), "\n")
+      cat("97.5%:", round(icer_percentiles[5], 2), "\n")
+    }
+  }
   
-  # Remove NA values
-  icers <- icers[!is.na(icers)]
-  delta_costs <- delta_costs[!is.na(delta_costs)]
-  delta_qalys <- delta_qalys[!is.na(delta_qalys)]
-  
-  # Print summary statistics
-  cat("Summary of completed simulations:\n")
-  cat("Mean ICER:", round(mean(icers), 2), "(SD:", round(sd(icers), 2), ")\n")
-  cat("Mean Incremental Cost:", round(mean(delta_costs), 2), "(SD:", round(sd(delta_costs), 2), ")\n")
-  cat("Mean Incremental QALYs:", round(mean(delta_qalys), 4), "(SD:", round(sd(delta_qalys), 4), ")\n")
-  
-  # Percentiles for ICER
-  icer_percentiles <- quantile(icers, probs = c(0.025, 0.25, 0.5, 0.75, 0.975))
-  cat("\nICER Percentiles:\n")
-  cat("2.5%:", round(icer_percentiles[1], 2), "\n")
-  cat("25%:", round(icer_percentiles[2], 2), "\n")
-  cat("50% (median):", round(icer_percentiles[3], 2), "\n")
-  cat("75%:", round(icer_percentiles[4], 2), "\n")
-  cat("97.5%:", round(icer_percentiles[5], 2), "\n")
-  
+  # Return a structured result for further processing
   return(list(
     results = results,
     completed_sims = completed_sims,
     total_runtime = total_runtime,
-    mean_icer = mean(icers),
-    sd_icer = sd(icers),
-    mean_delta_cost = mean(delta_costs),
-    sd_delta_cost = sd(delta_costs),
-    mean_delta_qaly = mean(delta_qalys),
-    sd_delta_qaly = sd(delta_qalys),
-    icer_percentiles = icer_percentiles
+    simulation_type = if(sensitivity) "sensitivity" else "baseline",
+    n_reps = n_reps,
+    n_individuals = n.i,
+    n_cycles = n.t,
+    summary = if(completed_sims > 0) {
+      list(
+        mean_icer = mean(icers),
+        sd_icer = sd(icers),
+        mean_delta_cost = mean(delta_costs),
+        sd_delta_cost = sd(delta_costs),
+        mean_delta_qaly = mean(delta_qalys),
+        sd_delta_qaly = sd(delta_qalys),
+        mean_esd_cost = mean(esd_costs),
+        sd_esd_cost = sd(esd_costs),
+        mean_surgery_cost = mean(surgery_costs),
+        sd_surgery_cost = sd(surgery_costs),
+        mean_esd_qaly = mean(esd_qalys),
+        sd_esd_qaly = sd(esd_qalys),
+        mean_surgery_qaly = mean(surgery_qalys),
+        sd_surgery_qaly = sd(surgery_qalys),
+        icer_percentiles = if(length(icers) >= 4) quantile(icers, probs = c(0.025, 0.25, 0.5, 0.75, 0.975)) else NULL
+      )
+    } else NULL
   ))
 }
 
-# New: Run baseline simulation with initialized model input (no randomization)
+# Convenience functions for backward compatibility
 run_baseline_simulation <- function(n.i = 1000, n.t = 20, verbose = FALSE, n_reps = 1, seed = 12345) {
-  results <- vector("list", n_reps)
-  for (i in 1:n_reps) {
-    # Set seed at the beginning of each replication
-    set.seed(seed + i - 1)
-    initialize_model_parameters(force = TRUE)
-    v.M_1 <- rep("H1", n.i)
-    v.M_2 <- rep("H2", n.i)
-    d.c <- d.e <- 0.03 / 4
-    # Pass the seed to MicroSim but don't set it there
-    sim_esd <- MicroSim(v.M_1, n.i, n.t, v.n, d.c, d.e, verbose = verbose, seed = seed + i*2)
-    sim_surgery <- MicroSim(v.M_2, n.i, n.t, v.n, d.c, d.e, verbose = verbose, seed = seed + i*2 + 1)
-    sim_esd$te <- sim_esd$te / 4
-    sim_surgery$te <- sim_surgery$te / 4
-    delta_c <- mean(sim_surgery$tc) - mean(sim_esd$tc)
-    delta_e <- mean(sim_surgery$te) - mean(sim_esd$te)
-    icer <- delta_c / delta_e
-    results[[i]] <- list(
-      esd = sim_esd,
-      surgery = sim_surgery,
-      delta_c = delta_c,
-      delta_e = delta_e,
-      icer = icer
-    )
-  }
+  # For single replication, return just that result
   if (n_reps == 1) {
-    return(results[[1]])
+    return(run_simulation(n.i, n.t, sensitivity = FALSE, verbose = verbose, sim_index = seed))
   } else {
-    esd_qalys <- sapply(results, function(res) mean(res$esd$te))
-    surgery_qalys <- sapply(results, function(res) mean(res$surgery$te))
-    esd_costs <- sapply(results, function(res) mean(res$esd$tc))
-    surgery_costs <- sapply(results, function(res) mean(res$surgery$tc))
-    delta_qalys <- sapply(results, function(res) res$delta_e)
-    delta_costs <- sapply(results, function(res) res$delta_c)
-    icers <- sapply(results, function(res) res$icer)
-    return(list(
-      n_reps = n_reps,
-      esd_qalys_mean = mean(esd_qalys), esd_qalys_sd = sd(esd_qalys),
-      surgery_qalys_mean = mean(surgery_qalys), surgery_qalys_sd = sd(surgery_qalys),
-      esd_costs_mean = mean(esd_costs), esd_costs_sd = sd(esd_costs),
-      surgery_costs_mean = mean(surgery_costs), surgery_costs_sd = sd(surgery_costs),
-      delta_qalys_mean = mean(delta_qalys), delta_qalys_sd = sd(delta_qalys),
-      delta_costs_mean = mean(delta_costs), delta_costs_sd = sd(delta_costs),
-      icer_mean = mean(icers), icer_sd = sd(icers),
-      all_results = results
-    ))
+    return(run_multiple_simulations(n_reps, sensitivity = FALSE, n.i = n.i, n.t = n.t, 
+                                   verbose = verbose, seed = seed))
   }
+}
+
+sensitivity_analysis <- function(n_reps = 1000, time_limit_seconds = 60, n.i = 1000, n.t = 20, 
+                                verbose = FALSE, seed = 12345) {
+  return(run_multiple_simulations(n_reps, sensitivity = TRUE, time_limit_seconds = time_limit_seconds,
+                                n.i = n.i, n.t = n.t, verbose = verbose, seed = seed))
 }
