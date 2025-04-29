@@ -19,7 +19,7 @@ To run the simulation:
 
 ```r
 # Make sure you're already in the gastro directory:
-shiny::runApp()
+shiny::runApp("run_simulation.R")
 ```
 
 The `run_simulation.R` script will automatically launch the Shiny GUI, allowing you to:
